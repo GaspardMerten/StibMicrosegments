@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 .env
 .pytest_cache/
-data/
+/data/
 out/
 .terraform/
 *.tfstate*

@@ -1,0 +1,578 @@
+[
+{
+"timestamp": 1742292010,
+"date": "2025-03-18T10:00:10.907371",
+"data": [
+{
+"directionId": "5029",
+"distanceFromPoint": 358,
+"pointId": "5018",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 0,
+"pointId": "5056",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 35,
+"pointId": "6437",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 0,
+"pointId": "5056",
+"lineId": "92"
+},
+{
+"directionId": "5320",
+"distanceFromPoint": 212,
+"pointId": "6470",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 42,
+"pointId": "5064",
+"lineId": "92"
+},
+{
+"directionId": "5320",
+"distanceFromPoint": 232,
+"pointId": "6356",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 0,
+"pointId": "5315",
+"lineId": "92"
+},
+{
+"directionId": "5029",
+"distanceFromPoint": 1,
+"pointId": "6423",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 82,
+"pointId": "6303",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 129,
+"pointId": "5315",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 56,
+"pointId": "6361",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 134,
+"pointId": "5059",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 127,
+"pointId": "6309",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 0,
+"pointId": "6361",
+"lineId": "92"
+},
+{
+"directionId": "5320",
+"distanceFromPoint": 468,
+"pointId": "6459",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 0,
+"pointId": "5056",
+"lineId": "92"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 173,
+"pointId": "2901",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 86,
+"pointId": "2726",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 200,
+"pointId": "5805",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 120,
+"pointId": "5039",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 405,
+"pointId": "0529",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 0,
+"pointId": "5766",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 0,
+"pointId": "5714",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 0,
+"pointId": "5866",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 218,
+"pointId": "5802",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 114,
+"pointId": "5039",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 0,
+"pointId": "0529",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 0,
+"pointId": "5361",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 85,
+"pointId": "5762",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 46,
+"pointId": "2901",
+"lineId": "55"
+}
+]
+},
+{
+"timestamp": 1742292031,
+"date": "2025-03-18T10:00:31.239299",
+"data": [
+{
+"directionId": "5029",
+"distanceFromPoint": 359,
+"pointId": "5018",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 0,
+"pointId": "5056",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 200,
+"pointId": "6437",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 0,
+"pointId": "5056",
+"lineId": "92"
+},
+{
+"directionId": "5320",
+"distanceFromPoint": 399,
+"pointId": "6470",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 163,
+"pointId": "5064",
+"lineId": "92"
+},
+{
+"directionId": "5320",
+"distanceFromPoint": 3,
+"pointId": "6357",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 0,
+"pointId": "5315",
+"lineId": "92"
+},
+{
+"directionId": "5029",
+"distanceFromPoint": 0,
+"pointId": "6423",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 82,
+"pointId": "6303",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 334,
+"pointId": "5315",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 56,
+"pointId": "6361",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 326,
+"pointId": "5059",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 127,
+"pointId": "6309",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 0,
+"pointId": "6361",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 0,
+"pointId": "5315",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 0,
+"pointId": "5056",
+"lineId": "92"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 173,
+"pointId": "2901",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 86,
+"pointId": "2726",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 200,
+"pointId": "5805",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 120,
+"pointId": "5039",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 405,
+"pointId": "0529",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 0,
+"pointId": "5766",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 0,
+"pointId": "5714",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 0,
+"pointId": "5866",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 218,
+"pointId": "5802",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 114,
+"pointId": "5039",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 0,
+"pointId": "0529",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 0,
+"pointId": "5361",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 85,
+"pointId": "5762",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 46,
+"pointId": "2901",
+"lineId": "55"
+}
+]
+},
+{
+"timestamp": 1742292051,
+"date": "2025-03-18T10:00:51.472266",
+"data": [
+{
+"directionId": "5029",
+"distanceFromPoint": 376,
+"pointId": "5018",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 0,
+"pointId": "5056",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 0,
+"pointId": "6308",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 0,
+"pointId": "5056",
+"lineId": "92"
+},
+{
+"directionId": "5320",
+"distanceFromPoint": 0,
+"pointId": "6363",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 293,
+"pointId": "5064",
+"lineId": "92"
+},
+{
+"directionId": "5320",
+"distanceFromPoint": 70,
+"pointId": "6357",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 0,
+"pointId": "5315",
+"lineId": "92"
+},
+{
+"directionId": "5029",
+"distanceFromPoint": 38,
+"pointId": "6423",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 82,
+"pointId": "6303",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 392,
+"pointId": "5315",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 56,
+"pointId": "6361",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 8,
+"pointId": "5060",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 127,
+"pointId": "6309",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 0,
+"pointId": "6361",
+"lineId": "92"
+},
+{
+"directionId": "3431",
+"distanceFromPoint": 0,
+"pointId": "5315",
+"lineId": "92"
+},
+{
+"directionId": "9990",
+"distanceFromPoint": 34,
+"pointId": "5056",
+"lineId": "92"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 0,
+"pointId": "5362",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 221,
+"pointId": "2726",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 481,
+"pointId": "5805",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 120,
+"pointId": "5039",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 0,
+"pointId": "0536",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 60,
+"pointId": "5766",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 7,
+"pointId": "5714",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 155,
+"pointId": "5866",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 475,
+"pointId": "5802",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 114,
+"pointId": "5039",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 0,
+"pointId": "0529",
+"lineId": "55"
+},
+{
+"directionId": "529",
+"distanceFromPoint": 103,
+"pointId": "5361",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 5,
+"pointId": "2720",
+"lineId": "55"
+},
+{
+"directionId": "9943",
+"distanceFromPoint": 240,
+"pointId": "2901",
+"lineId": "55"
+}
+]
+}
+]
