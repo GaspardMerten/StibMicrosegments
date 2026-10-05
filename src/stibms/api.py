@@ -21,7 +21,7 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
                                               Custom windows are computed over several polls:
                                               {"status": "running", "done", "total"} until done.
     GET /api/status                           ingested range, derived months, months pending
-    GET /, /comparer, /classement             the page (one line / two periods / network ranking)
+    GET /, /comparer, /classement, /methode   the page (one line / two periods / network ranking / method)
     GET /view?<analysis or compare params>    the package page fed by /api/analysis or /api/compare
 
 Results are cached in process (LRU) and in the bucket (``results/v{ALGO}/<hash>.json.gz``), keyed
@@ -534,6 +534,7 @@ def ranking(request: Request, from_: str | None = Q(None, alias="from"), to: str
 @app.get("/", include_in_schema=False)
 @app.get("/comparer", include_in_schema=False)
 @app.get("/classement", include_in_schema=False)
+@app.get("/methode", include_in_schema=False)
 def index():
     return FileResponse(STATIC / "index.html", headers={"Cache-Control": SHORT_CACHE})
 
@@ -552,6 +553,13 @@ _LOADER = """<script>
     s.textContent = main.textContent;
     document.body.appendChild(s);
     try { parent.postMessage({ms: "ready"}, "*"); } catch (x) {}
+    // link the platform's method page from the page's method section
+    var mc = document.querySelector("section.method");
+    if (mc && parent !== window) {
+      var pm = document.createElement("p");
+      pm.innerHTML = '<a href="/methode" target="_top">' + (document.documentElement.lang === "en" ? "Full method (French)" : "La méthode en détail") + " →</a>";
+      mc.appendChild(pm);
+    }
     // the platform page sizes this frame to its content (no scroll inside a scroll)
     var last = 0;
     function size() {

@@ -62,7 +62,7 @@ Three pages share `static/index.html`: `/` (one line), `/comparer` (two periods)
 
 The ranking (`src/stibms/ranking.py`) sums, per stretch (`link_key`, shared by the lines on the same
 stop pair and track), the vehicle time lost per day over the evening. The nightly ingest precomputes
-the default window (last three complete months, weekdays); a custom window is computed a few lines
+the default window (last complete month, weekdays); a custom window is computed a few lines
 per request (`/api/ranking` answers 202 with progress until done; the page polls).
 
 ```bash

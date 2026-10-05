@@ -216,7 +216,7 @@ def test_status_lines_default_and_not_derived(client, derived_root):
 
 
 def test_page_paths(client):
-    for path in ("/", "/comparer", "/classement"):
+    for path in ("/", "/comparer", "/classement", "/methode"):
         assert client.get(path).status_code == 200
 
 

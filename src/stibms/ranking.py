@@ -14,8 +14,8 @@ Per-line parts are cached in the bucket (``results/v{ALGO}/rankline-<key>.parque
 computed incrementally: ``compute(..., budget_s=)`` does as many lines as fit in the budget and
 reports progress; the API calls it on each poll of a custom window (Cloud Run only gives CPU during
 requests). The assembled ranking is ``results/v{ALGO}/ranking-<key>.json.gz``;
-``results/v{ALGO}/ranking-default.json`` points at the nightly default window (last three complete
-months of weekdays).
+``results/v{ALGO}/ranking-default.json`` points at the nightly default window (the last complete
+month of weekdays).
 """
 from __future__ import annotations
 
@@ -82,8 +82,11 @@ class RankQuery:
         return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
-def default_window(data: Data, today: dt.date | None = None) -> tuple[dt.date, dt.date] | None:
-    """Last three complete months that are ingested up to their last day and derived."""
+DEFAULT_MONTHS = 1    # the default window: the last complete month (weekdays)
+
+
+def default_window(data: Data, today: dt.date | None = None, n: int = DEFAULT_MONTHS) -> tuple[dt.date, dt.date] | None:
+    """Last ``n`` complete months that are ingested up to their last day and derived."""
     ing = data.ingested_dates()
     if not ing:
         return None
@@ -91,8 +94,8 @@ def default_window(data: Data, today: dt.date | None = None) -> tuple[dt.date, d
     months = [m for m in have if month_dates(m)[-1] <= ing[-1]]
     if not months:
         return None
-    last3 = months[-3:]
-    return month_dates(last3[0])[0], month_dates(last3[-1])[-1]
+    pick = months[-n:]
+    return month_dates(pick[0])[0], month_dates(pick[-1])[-1]
 
 
 def line_modes(data: Data) -> dict[str, dict]:
@@ -285,7 +288,7 @@ def precompute_default(data: Data, top: int = 50) -> dict | None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m stibms.ranking", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--default", action="store_true", help="the nightly default window (last 3 complete months)")
+    ap.add_argument("--default", action="store_true", help="the nightly default window (last complete month)")
     ap.add_argument("--from", dest="first")
     ap.add_argument("--to")
     ap.add_argument("--dow", default="0-4")

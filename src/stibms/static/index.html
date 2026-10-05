@@ -137,6 +137,20 @@ details.more .opts { display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:10p
 .leaflet-container { font:13px var(--sans); }
 .method { color:var(--ink-3); font-size:13px; max-width:90ch; margin:18px 0 40px; }
 footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px solid var(--line); margin-top:20px; }
+/* ---------------------------------------------------------------- method page */
+.doc { max-width:72ch; padding:24px 0 10px; font-size:16px; line-height:1.65; color:var(--ink-2); }
+.doc h1 { font:800 clamp(30px, 4.5vw, 46px)/1.08 var(--serif); color:var(--ink); margin:8px 0 14px; letter-spacing:-.01em; }
+.doc h2 { font:700 23px/1.25 var(--serif); color:var(--ink); margin:34px 0 8px; }
+.doc p, .doc li { margin:0 0 12px; }
+.doc strong { color:var(--ink); }
+.doc .lead { font-size:18px; color:var(--ink-2); }
+.doc table { border-collapse:collapse; width:100%; font-size:15px; margin:8px 0 14px; }
+.doc th, .doc td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+.doc th { font:500 11px/1.2 var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--ink-3); }
+.doc td:first-child { color:var(--ink); font-weight:600; white-space:nowrap; }
+@media (max-width:600px) { .doc td:first-child { white-space:normal; } }
+.doc .eg { background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--acc); border-radius:10px; padding:12px 16px; margin:12px 0 16px; }
+.doc .formula { font:500 14px/1.6 var(--mono); color:var(--ink); }
 [hidden] { display:none !important; }
 </style>
 </head>
@@ -148,6 +162,7 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
       <a href="/" data-tab="one">Une ligne</a>
       <a href="/comparer" data-tab="cmp">Comparer</a>
       <a href="/classement" data-tab="rank">Classement du réseau</a>
+      <a href="/methode" data-tab="method">Méthode</a>
     </nav>
   </div>
 </div>
@@ -219,7 +234,55 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
     <div id="rout"></div>
   </section>
 
-  <footer>Données : STIB vehicle-distance et punctuality via <a href="https://mobilitytwin.brussels">MobilityTwin.Brussels</a>, GTFS STIB. Méthode : paquet <a href="https://pypi.org/project/microsegments/">microsegments</a>. <a href="/api/docs">API</a>.</footer>
+  <!-- ============================================================ method -->
+  <section id="methodview" hidden>
+    <article class="doc">
+      <h1>Des observations aux secondes</h1>
+      <p class="lead">Comment ce site mesure, tronçon par tronçon, le temps que les trams, bus et métros de la STIB passent sur leur parcours, et où ils en perdent.</p>
+
+      <h2>Le principe</h2>
+      <p>La STIB publie la position de chacun de ses véhicules environ toutes les 20 secondes. Chaque ligne est découpée en <strong>micro-segments</strong> d'une trentaine de mètres, et chaque relevé place chaque véhicule dans l'un d'eux : c'est une <strong>observation</strong>.</p>
+      <p>Un véhicule qui reste T secondes dans un micro-segment y est relevé, en moyenne, T / 20 fois. Autrement dit, <strong>une observation correspond à environ 20 secondes de présence</strong>. Compter les observations, c'est donc mesurer du temps.</p>
+
+      <h2>Pourquoi c'est juste en moyenne, et grossier pour un seul passage</h2>
+      <p>Les relevés tombent à des instants sans rapport avec la position du véhicule : c'est un échantillonnage dans le temps. En moyenne, le nombre d'observations est exactement proportionnel au temps passé.</p>
+      <p>Pour un passage isolé, en revanche, la mesure est très grossière : à 30 km/h, un tram traverse 30 m en 3,6 s et il y est vu 0 ou 1 fois (0,18 fois en moyenne). C'est en cumulant des milliers de passages sur une période de plusieurs semaines que la moyenne devient précise. L'intervalle de confiance affiché, obtenu en tirant les jours au sort, indique cette précision.</p>
+
+      <h2>Trois mesures, en secondes</h2>
+      <table>
+        <thead><tr><th>Mesure</th><th>Calcul</th></tr></thead>
+        <tbody>
+          <tr><td>Temps par véhicule</td><td>observations ÷ passages × 20 s</td></tr>
+          <tr><td>Temps perdu par véhicule</td><td>(observations par passage à l'heure choisie − observations par passage le soir, de 20 h à 23 h, les mêmes jours) × 20 s</td></tr>
+          <tr><td>Temps perdu total</td><td>temps perdu par véhicule × nombre de passages, en secondes-véhicule par heure ou par jour</td></tr>
+        </tbody>
+      </table>
+      <div class="eg"><strong>Exemple.</strong> Tram 55, entre Waelhem et Verboekhoven en direction de Rogier, l'après-midi : chaque tram y est vu 2,7 fois de plus que le soir, soit environ <strong>54 secondes perdues par tram</strong>.</div>
+      <p>Le soir sert de référence parce que la circulation y est fluide. Les couleurs de la carte et de la matrice suivent une échelle fixe, la même pour toutes les lignes et toutes les périodes : on peut comparer directement deux lignes ou deux mois.</p>
+      <p>Le <a href="/classement">classement du réseau</a> additionne ce temps perdu, de 6 h à 21 h, sur chaque tronçon entre deux arrêts, puis sur toutes les lignes qui l'empruntent. La <a href="/comparer">comparaison de périodes</a> met en regard le temps par véhicule avant et après, micro-segment par micro-segment.</p>
+
+      <h2>Les trous dans le flux</h2>
+      <p>On divise toujours par les relevés réellement reçus, pas par les 180 relevés théoriques d'une heure. Une heure reçue à moins de 80 %, ou pendant laquelle le flux est resté figé plus de cinq minutes, est écartée. Un jour dont plus d'un quart des heures de 6 h à 21 h sont écartées l'est aussi, de même que les jours où la ligne manque dans le flux publié par la STIB. Les jours fériés sont exclus par défaut. Le calendrier de couverture, sous chaque analyse, montre les jours retenus et écartés.</p>
+      <p>Le facteur de 20 s est l'intervalle médian réel du flux. Un flux GPS plus dense serait ramené sur une grille de 20 s par véhicule.</p>
+
+      <h2>Validation</h2>
+      <p>Pour chaque inter-arrêt, la somme des micro-segments est comparée au temps mesuré indépendamment entre les deux arrêts, à partir des horaires de passage publiés par la STIB. L'écart est de <strong>±5 %</strong> sur la plupart des inter-arrêts et de ±15 % au pire (tram 55, février à mai 2025).</p>
+
+      <h2>Limites</h2>
+      <ul>
+        <li>C'est un ordre de grandeur, pas un chronométrage : l'intervalle réel entre deux relevés varie de 18 à 22 s.</li>
+        <li>La position publiée peut avoir quelques secondes de retard : le temps est alors légèrement décalé vers l'aval, mais le total ne change pas.</li>
+        <li>Le temps perdu est relatif au soir : un retard présent aussi le soir, comme un feu mal réglé, n'apparaît pas dans l'écart au soir. C'est pourquoi l'écart au niveau habituel de la ligne est affiché à côté.</li>
+        <li>Métro : le flux place les rames presque toujours en station ; les passages viennent alors des horaires de passage, jamais des seules positions.</li>
+        <li>Une hausse peut venir d'un changement d'horaire plutôt que de la voirie : la comparaison signale les tronçons dont la fréquence a changé de plus de 20 %.</li>
+      </ul>
+
+      <h2>Code et données</h2>
+      <p>Les calculs sont faits par <a href="https://github.com/GaspardMerten/microsegments">microsegments</a>, un paquet Python open source (<a href="https://pypi.org/project/microsegments/">PyPI</a>), utilisable avec n'importe quel GTFS et flux de positions. Les données viennent du flux STIB <em>vehicle-distance</em> et des horaires de passage, via <a href="https://mobilitytwin.brussels">MobilityTwin.Brussels</a>. Les résultats sont aussi disponibles par l'<a href="/api/docs">API</a> (JSON, CSV, Parquet).</p>
+    </article>
+  </section>
+
+  <footer>Données : STIB vehicle-distance et punctuality via <a href="https://mobilitytwin.brussels">MobilityTwin.Brussels</a>, GTFS STIB. <a href="/methode">Méthode</a> · paquet open source <a href="https://github.com/GaspardMerten/microsegments">microsegments</a> · <a href="/api/docs">API</a>.</footer>
 </main>
 
 <script>
@@ -354,13 +417,14 @@ document.addEventListener("click", e => { if (!e.target.closest(".picker")) clos
 function setTab(t, push) {
   TAB = t;
   document.querySelectorAll("nav a").forEach(a => { if (a.dataset.tab === t) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
-  $("lineview").hidden = t === "rank"; $("rankview").hidden = t !== "rank";
+  $("lineview").hidden = t === "rank" || t === "method"; $("rankview").hidden = t !== "rank"; $("methodview").hidden = t !== "method";
+  $("pending").style.display = t === "method" ? "none" : "";
   $("single").hidden = t !== "one"; $("double").hidden = t !== "cmp";
   $("go").textContent = t === "cmp" ? "Comparer" : "Afficher";
   $("lede1").textContent = t === "cmp"
     ? "Deux périodes comparées tronçon par tronçon : où les véhicules passent-ils plus vite ou plus lentement qu'avant ? La comparaison porte sur le temps passé par véhicule, quel que soit le nombre de passages."
     : "Chaque ligne est découpée en tronçons de 30 m. On compte combien de fois un véhicule y est vu (toutes les 20 s) : là où ce nombre dépasse celui du soir, les véhicules perdent du temps.";
-  document.title = {one: "Une ligne", cmp: "Comparer deux périodes", rank: "Classement du réseau"}[t] + " · STIB micro-segments";
+  document.title = {one: "Une ligne", cmp: "Comparer deux périodes", rank: "Classement du réseau", method: "Méthode"}[t] + " · STIB micro-segments";
   presets();
 }
 document.querySelectorAll("nav a").forEach(a => a.addEventListener("click", e => {
@@ -368,9 +432,11 @@ document.querySelectorAll("nav a").forEach(a => a.addEventListener("click", e =>
   const t = a.dataset.tab;
   if (t === TAB) return;
   const line = $("linebtn").dataset.line;
-  history.pushState(null, "", a.getAttribute("href") + (t !== "rank" && line ? "?line=" + encodeURIComponent(line) : ""));
+  history.pushState(null, "", a.getAttribute("href") + ((t === "one" || t === "cmp") && line ? "?line=" + encodeURIComponent(line) : ""));
   setTab(t);
-  if (t === "rank") runRank(); else if (line && lineOf(line) && lineOf(line).available) runLine();
+  window.scrollTo(0, 0);
+  if (t === "method") return;
+  if (t === "rank") { $("rfrom").value = ""; $("rto").value = ""; runRank(); } else if (line && lineOf(line) && lineOf(line).available) runLine();
 }));
 window.addEventListener("popstate", () => boot(false));
 
@@ -614,7 +680,7 @@ function pendingBanner() {
 }
 async function boot(first) {
   const path = location.pathname.replace(/\/+$/, "");
-  const tab = path === "/comparer" ? "cmp" : path === "/classement" ? "rank" : "one";
+  const tab = path === "/comparer" ? "cmp" : path === "/classement" ? "rank" : path === "/methode" ? "method" : "one";
   setTab(tab);
   const u = new URLSearchParams(location.search);
   if (first) {
@@ -624,6 +690,7 @@ async function boot(first) {
     } catch (e) { done($("status"), "Impossible de charger les lignes : " + esc(e.message), true); return; }
     pendingBanner();
   }
+  if (tab === "method") return;
   if (tab === "rank") {
     for (const [k, id] of [["from", "rfrom"], ["to", "rto"]]) $(id).value = u.get(k) || "";
     dowSet($("rdow"), u.get("dow"));

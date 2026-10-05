@@ -216,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
             if m not in months and not store.exists(f"derived/v{_algo()}/_SUCCESS/month={m}.json"):
                 months.add(m)
         bad = derive_months(store, sorted(months)) if months else False
-        # The network ranking of the default window (last three complete months); a no-op when the
+        # The network ranking of the default window (last complete month); a no-op when the
         # window's data did not change (the result is cached under a key of its data stamp).
         if args.date.strip().lower() == "yesterday" and not args.no_ranking:
             bad |= refresh_ranking(store)
