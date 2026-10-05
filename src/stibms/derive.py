@@ -2,6 +2,7 @@
 per line (layout in ``stibms.data``).
 
     python -m stibms.derive --month 2025-03 [--lines all|55,71] [--bucket gs://b | --local DIR]
+    python -m stibms.derive --from 2024-04 --to 2026-10 --coverage-only     # coverage files only
 
 Steps for a month M (dates = ingested service dates of M):
 
@@ -219,6 +220,28 @@ def derive_month(data: Data, month: str, lines: list[str] | None = None, force_p
     return report
 
 
+def rewrite_coverage(data: Data, month: str) -> dict:
+    """Recompute only the month's coverage file (e.g. after a change of the coverage flags in the
+    package) and refresh the derive report's ``written_at`` so result caches are invalidated."""
+    t0 = time.time()
+    ingested = set(data.ingested_dates())
+    dates = [d for d in month_dates(month) if d in ingested]
+    if not dates:
+        return {"month": month, "dates": 0}
+    write_coverage(data, month, dates)
+    rel = derived(f"_SUCCESS/month={month}.json")
+    try:
+        rep = data.store.read_json(rel)
+    except FileNotFoundError:
+        rep = {"month": month, "algo": ALGO_VERSION, "dates": [d.isoformat() for d in dates], "failed": {}}
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    rep.update({"written_at": now, "coverage_rewritten_at": now, "coverage_microsegments": ms.version()})
+    data.store.write_json(rel, rep)
+    data.invalidate()
+    log.info("%s: coverage rewritten (%d dates) in %.1f s", month, len(dates), time.time() - t0)
+    return {"month": month, "lines": rep.get("lines"), "failed": {}, "seconds": round(time.time() - t0, 1)}
+
+
 def months_for(first: dt.date, last: dt.date) -> list[str]:
     from .data import months_between
     return months_between(first, last)
@@ -235,6 +258,8 @@ def main(argv: list[str] | None = None) -> int:
     where.add_argument("--bucket", help="gs://bucket[/prefix] (default $MS_BUCKET)")
     where.add_argument("--local", help="local directory instead of GCS")
     ap.add_argument("--force-patterns", action="store_true", help="rebuild the per-feed networks")
+    ap.add_argument("--coverage-only", action="store_true",
+                    help="only recompute the coverage files of the months (fast; e.g. after a package change)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     root = args.local or args.bucket or os.environ.get("MS_BUCKET")
@@ -251,7 +276,10 @@ def main(argv: list[str] | None = None) -> int:
     lines = None if args.lines == "all" else [x.strip() for x in args.lines.split(",") if x.strip()]
     data = Data(root)
     for m in months:
-        rep = derive_month(data, m, lines, force_patterns=args.force_patterns)
+        if args.coverage_only:
+            rep = rewrite_coverage(data, m)
+        else:
+            rep = derive_month(data, m, lines, force_patterns=args.force_patterns)
         print(json.dumps({k: rep.get(k) for k in ("month", "lines", "failed", "seconds")}, default=str))
         if rep.get("failed"):
             return 1

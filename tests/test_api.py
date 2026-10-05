@@ -218,3 +218,16 @@ def test_status_lines_default_and_not_derived(client, derived_root):
 def test_page_paths(client):
     for path in ("/", "/comparer", "/classement"):
         assert client.get(path).status_code == 200
+
+
+def test_coverage_only_rewrite(derived_root):
+    from stibms.data import Data
+    from stibms.derive import rewrite_coverage
+    import json
+    rel = derived_root / derived("_SUCCESS/month=2025-06.json")
+    before = json.loads(rel.read_text())
+    cov = pl.read_parquet(derived_root / derived("coverage/month=2025-06.parquet"))
+    rewrite_coverage(Data(str(derived_root)), "2025-06")
+    after = json.loads(rel.read_text())
+    assert after["lines"] == before["lines"] and after["coverage_rewritten_at"] == after["written_at"]
+    assert pl.read_parquet(derived_root / derived("coverage/month=2025-06.parquet")).equals(cov)
