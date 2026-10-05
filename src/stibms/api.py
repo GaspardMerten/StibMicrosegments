@@ -640,20 +640,6 @@ _LOADER = """<script>
 </script>"""
 
 
-def _matrix_first(html: str) -> str:
-    """Platform layout: the hour x micro-segment matrix (the most used view) right after the
-    controls, above the map. Moves the rendered ``#mxcard`` section; the package template is
-    unchanged and the page works the same if the markers are not found."""
-    import re
-    m = re.search(r'\s*<section class="card" id="mxcard">.*?</section>', html, flags=re.S)
-    g = html.find('<div class="grid">')
-    if not m or g < 0 or g > m.start():
-        return html
-    block = m.group(0)
-    html = html[:m.start()] + html[m.end():]
-    return html[:g] + block.strip() + "\n  " + html[g:]
-
-
 def _template() -> str | None:
     """The package's page (``microsegments.html.export.render``) with a fetch shim instead of embedded
     data: the page is rendered with an empty contract, its main script is parked as inert text, and
@@ -671,7 +657,6 @@ def _template() -> str | None:
     if not m:
         return None
     a, b = m.span(1)
-    html = _matrix_first(html)
     m = re.search(r'<script id="ms-data" type="application/json">.*?</script>\s*<script>(.*?)</script>', html, flags=re.S)
     a, b = m.span(1)
     html = (html[:m.start()] + '<script id="ms-data" type="application/json"></script>\n'
