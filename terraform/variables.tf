@@ -26,9 +26,9 @@ variable "github_repo" {
 }
 
 variable "image_repository" {
-  description = "Existing Artifact Registry Docker repository (europe-west1) for the image."
+  description = "Artifact Registry Docker repository (europe-west1) created for the image, with a keep-5 cleanup policy."
   type        = string
-  default     = "cloud-run-source-deploy"
+  default     = "microsegments"
 }
 
 variable "create_api" {

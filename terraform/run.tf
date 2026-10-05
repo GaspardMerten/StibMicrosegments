@@ -45,7 +45,7 @@ resource "google_cloud_run_v2_job" "ingest" {
   lifecycle {
     ignore_changes = [client, client_version, template[0].template[0].containers[0].image]
   }
-  depends_on = [google_project_service.required, google_secret_manager_secret_iam_member.run_token]
+  depends_on = [google_secret_manager_secret_iam_member.run_token]
 }
 
 # Same command over a range, dates split round-robin across tasks (CLOUD_RUN_TASK_INDEX/COUNT).
@@ -95,7 +95,7 @@ resource "google_cloud_run_v2_job" "backfill" {
   lifecycle {
     ignore_changes = [client, client_version, template[0].template[0].containers[0].image]
   }
-  depends_on = [google_project_service.required, google_secret_manager_secret_iam_member.run_token]
+  depends_on = [google_secret_manager_secret_iam_member.run_token]
 }
 
 resource "google_cloud_run_v2_job_iam_member" "scheduler_runs_ingest" {
@@ -119,7 +119,6 @@ resource "google_cloud_scheduler_job" "nightly" {
       service_account_email = google_service_account.scheduler.email
     }
   }
-  depends_on = [google_project_service.required]
 }
 
 # ---------------------------------------------------------------- API (placeholder)
@@ -162,7 +161,6 @@ resource "google_cloud_run_v2_service" "api" {
   lifecycle {
     ignore_changes = [client, client_version, template[0].containers[0].image]
   }
-  depends_on = [google_project_service.required]
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public" {

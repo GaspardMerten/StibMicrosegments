@@ -26,20 +26,6 @@ locals {
   }
 }
 
-resource "google_project_service" "required" {
-  for_each = toset([
-    "run.googleapis.com",
-    "artifactregistry.googleapis.com",
-    "cloudscheduler.googleapis.com",
-    "secretmanager.googleapis.com",
-    "iamcredentials.googleapis.com",
-    "storage.googleapis.com",
-    "iam.googleapis.com",
-  ])
-  service            = each.key
-  disable_on_destroy = false
-}
-
 # ---------------------------------------------------------------- data
 # Raw days (~9 MB each), GTFS feeds once per content sha, derived tables and the result cache.
 # No lifecycle rule: raw days are the archive the derived layers are rebuilt from.
@@ -54,7 +40,6 @@ resource "google_storage_bucket" "data" {
   versioning {
     enabled = false
   }
-  depends_on = [google_project_service.required]
 }
 
 # The value is added out of band, never in Terraform state:
@@ -64,14 +49,12 @@ resource "google_secret_manager_secret" "token" {
   replication {
     auto {}
   }
-  depends_on = [google_project_service.required]
 }
 
 # ---------------------------------------------------------------- identities
 resource "google_service_account" "run" {
   account_id   = "ms-run"
   display_name = "Microsegments API and ingest jobs"
-  depends_on   = [google_project_service.required]
 }
 
 resource "google_storage_bucket_iam_member" "run_data" {
@@ -89,7 +72,6 @@ resource "google_secret_manager_secret_iam_member" "run_token" {
 resource "google_service_account" "scheduler" {
   account_id   = "ms-cron"
   display_name = "Triggers the microsegments nightly ingest"
-  depends_on   = [google_project_service.required]
 }
 
 # CI: the project's shared pool `github` / provider `github-oidc` only admits
@@ -98,7 +80,6 @@ resource "google_service_account" "scheduler" {
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "ms-github"
   display_name              = "GitHub Actions for microsegments"
-  depends_on                = [google_project_service.required]
 }
 
 resource "google_iam_workload_identity_pool_provider" "github" {
@@ -118,7 +99,6 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 resource "google_service_account" "deployer" {
   account_id   = "ms-deploy"
   display_name = "Builds and deploys microsegments from GitHub"
-  depends_on   = [google_project_service.required]
 }
 
 resource "google_service_account_iam_member" "github_impersonates_deployer" {
@@ -133,11 +113,33 @@ resource "google_project_iam_member" "deployer_run" {
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
-# Images go to the project's existing cloud-run-source-deploy repository (Cloud Run already pulls from it).
+# Own image repository (not the shared cloud-run-source-deploy) so the cleanup policy only touches
+# this project's images: keep the 5 most recent, delete the rest.
+resource "google_artifact_registry_repository" "images" {
+  location               = var.region
+  repository_id          = var.image_repository
+  format                 = "DOCKER"
+  cleanup_policy_dry_run = false
+  cleanup_policies {
+    id     = "keep-5"
+    action = "KEEP"
+    most_recent_versions {
+      keep_count = 5
+    }
+  }
+  cleanup_policies {
+    id     = "delete-rest"
+    action = "DELETE"
+    condition {
+      tag_state = "ANY"
+    }
+  }
+}
+
 resource "google_artifact_registry_repository_iam_member" "deployer_push" {
   project    = var.project_id
   location   = var.region
-  repository = var.image_repository
+  repository = google_artifact_registry_repository.images.repository_id
   role       = "roles/artifactregistry.writer"
   member     = "serviceAccount:${google_service_account.deployer.email}"
 }
