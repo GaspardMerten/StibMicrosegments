@@ -73,7 +73,7 @@ jobs:
           gcloud run deploy ms-api --image "$IMAGE:$GITHUB_SHA" \
             --project "$PROJECT" --region "$REGION" \
             --command uvicorn --args "stibms.api:app,--host,0.0.0.0,--port,8080" \
-            --min-instances 0 --max-instances 3 --memory 2Gi --concurrency 8 --cpu-boost \
+            --min-instances 0 --max-instances 3 --cpu 2 --memory 2Gi --concurrency 8 --cpu-boost --cpu-throttling \
             --quiet
 
       - name: Smoke test

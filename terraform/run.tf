@@ -187,7 +187,9 @@ resource "google_cloud_run_v2_service" "api" {
       image = local.image
       resources {
         limits = {
-          cpu    = "1"
+          # 2 vCPU: one cache-missing analysis (one at a time, stibms.api.HEAVY) leaves a core for
+          # the other requests. CPU only during requests (cpu_idle), min 0 instances.
+          cpu    = "2"
           memory = "2Gi"
         }
         cpu_idle          = true
