@@ -1,0 +1,81 @@
+# Build the image once and roll it out to the two ingest jobs and the API service on every push to
+# main. Auth is Workload Identity Federation (pool ms-github, created by terraform/): GitHub's OIDC
+# token is exchanged for the ms-deploy service account, no key in this repo. Terraform owns the
+# resources and their settings; this workflow only changes images (and the API command).
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["terraform/**", "**.md"]
+  workflow_dispatch:
+
+env:
+  PROJECT: mobility-twin-norse
+  REGION: europe-west1
+  IMAGE: europe-west1-docker.pkg.dev/mobility-twin-norse/cloud-run-source-deploy/stib-microsegments
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]' && pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/833836401560/locations/global/workloadIdentityPools/ms-github/providers/github
+          service_account: ms-deploy@mobility-twin-norse.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push image
+        run: |
+          gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
+          docker build -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" .
+          docker push --all-tags "$IMAGE"
+
+      - name: Update ingest jobs
+        run: |
+          for job in ms-ingest ms-backfill; do
+            gcloud run jobs update "$job" --image "$IMAGE:$GITHUB_SHA" \
+              --project "$PROJECT" --region "$REGION" --quiet
+          done
+
+      # Gated until the API exists (src/stibms/api.py, added by the API task).
+      - name: Check for the API
+        id: api
+        run: |
+          if [ -f src/stibms/api.py ] || [ -d src/stibms/api ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Deploy API
+        if: steps.api.outputs.present == 'true'
+        run: |
+          gcloud run deploy ms-api --image "$IMAGE:$GITHUB_SHA" \
+            --project "$PROJECT" --region "$REGION" \
+            --command uvicorn --args "stibms.api:app,--host,0.0.0.0,--port,8080" \
+            --min-instances 0 --max-instances 3 --memory 2Gi --concurrency 8 --cpu-boost \
+            --quiet
+
+      - name: Smoke test
+        if: steps.api.outputs.present == 'true'
+        run: |
+          URL=$(gcloud run services describe ms-api --project "$PROJECT" --region "$REGION" --format='value(status.url)')
+          curl -sf -o /dev/null --retry 3 --retry-delay 5 -w "health: %{http_code} in %{time_total}s\n" "$URL/api/health"

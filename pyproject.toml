@@ -1,0 +1,38 @@
+[project]
+name = "stibms"
+version = "0.1.0"
+description = "STIB microsegments platform: ingestion of MobilityTwin STIB feeds to compact Parquet in GCS, derivation and API."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Gaspard Merten", email = "gaspard.mp.work@gmail.com" }]
+dependencies = [
+    "polars>=1.20",
+    "pyarrow>=17",
+    "fsspec>=2024.6",
+    "gcsfs>=2024.6",
+    "aiohttp>=3.9",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+# The analysis package; the ingest does not need it. Pinned to a minor version once released.
+analysis = ["microsegments"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+stibms-ingest = "stibms.ingest:main"
+
+[tool.uv.sources]
+microsegments = { path = "../microsegments", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stibms"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["network: needs the MobilityTwin API and a token"]
+addopts = "-m 'not network'"

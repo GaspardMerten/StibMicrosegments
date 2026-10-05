@@ -1,0 +1,9 @@
+.git
+.venv
+data
+out
+tests
+terraform
+.github
+**/__pycache__
+.env
