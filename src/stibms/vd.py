@@ -6,6 +6,15 @@ current day) carry the same rows as the ~20 s JSON snapshots at a fraction of th
 also read to list every poll. Any part of the window not covered by a Parquet file is fetched as
 raw JSON snapshots (16 threads), so a missing bulk file only makes the day slower.
 
+Incomplete bulk files. A bulk file is checked against a few JSON snapshots of its own range
+(``CHECK_SAMPLES``, spread over the file): if the JSON carries clearly more rows than the bulk file at
+the same poll in at least two samples, the file is dropped and its whole range is read from the JSON
+snapshots. Note that the partial days found in the history (2025-03-31, 2025-04-29, 2025-05-20,
+2025-11-24..26, ... with 15-33 lines of ~75) are partial at the source: the JSON snapshots carry the
+same rows as the bulk file, so nothing can be recovered; ``stats["partial_source"]`` flags them (lines
+far below the previous days, set by the ingest) and the analysis excludes them per line
+(``analysis.line_absent``).
+
 Frozen polls. ``frozen`` = the poll's content (its multiset of rows) is identical to the previous
 poll's in the window, the first poll is never frozen; consecutive empty polls are frozen too.
 This is the ``microsegments.io.stib`` definition. A frozen poll keeps its entry in snaps.parquet
@@ -35,6 +44,8 @@ from .servicedays import window
 ENDPOINT = "stib/vehicle-distance"
 COMPONENT = "stib_vehicle_distance"
 WORKERS = 16
+CHECK_SAMPLES = 6      # JSON snapshots compared with each bulk file
+CHECK_TOL = 0.05       # JSON rows above bulk rows by more than this share (and 3 rows) = bulk incomplete
 ROW_GROUP_TARGET = 128_000
 
 ROWS_SCHEMA = {"ts": pl.Int64, "line": pl.Utf8, "dir": pl.Utf8, "point": pl.Utf8, "dist": pl.Int32}
@@ -137,6 +148,23 @@ def to_arrow(vd: pl.DataFrame) -> pa.Table:
     return vd.cast(ROWS_SCHEMA).to_arrow()
 
 
+def check_bulk(mt: MobilityTwin, part: ParquetPart, rows: pl.DataFrame, snaps: list[Snapshot], pool,
+               n: int = CHECK_SAMPLES) -> dict:
+    """Compare a bulk file's rows with a few JSON snapshots of its range (see the module docstring)."""
+    if not snaps:
+        return {"file": part.url.rsplit("/", 1)[-1], "samples": 0, "short": 0, "incomplete": False}
+    step = max(1, len(snaps) // (n + 1))
+    pick = snaps[step::step][:n] or snaps[:1]
+    counts = rows.group_by("ts").len()
+    have = dict(zip(counts["ts"].to_list(), counts["len"].to_list()))
+    js = list(pool.map(lambda s: rows_from_json(s.timestamp, mt.fetch(s.url)).height, pick))
+    pairs = [(j, have.get(s.timestamp, 0)) for s, j in zip(pick, js)]
+    short = sum(1 for j, b in pairs if j > b * (1 + CHECK_TOL) + 3)
+    return {"file": part.url.rsplit("/", 1)[-1], "samples": len(pairs), "short": short,
+            "json_rows": sum(j for j, _ in pairs), "bulk_rows": sum(b for _, b in pairs),
+            "incomplete": short >= min(2, len(pairs))}
+
+
 def fetch_day(mt: MobilityTwin, d: date, workers: int = WORKERS) -> VdDay:
     t0, t1 = window(d)
     index: list[Snapshot] = mt.index(ENDPOINT, t0, t1)
@@ -153,9 +181,17 @@ def fetch_day(mt: MobilityTwin, d: date, workers: int = WORKERS) -> VdDay:
     def in_bulk(ts: int) -> bool:
         return any(p.start <= ts < p.end for p in chosen)
 
-    json_snaps = [s for s in index if not in_bulk(s.timestamp)]
     with ThreadPoolExecutor(max_workers=workers) as pool:
         bulk = list(pool.map(lambda p: rows_from_bulk(mt.fetch(p.url)), chosen))
+        checks = [check_bulk(mt, p, f, [s for s in index if p.start <= s.timestamp < p.end], pool)
+                  for p, f in zip(chosen, bulk)]
+    dropped = [p for p, c in zip(chosen, checks) if c["incomplete"]]
+    if dropped:
+        keep = [i for i, p in enumerate(chosen) if p not in dropped]
+        chosen, bulk = [chosen[i] for i in keep], [bulk[i] for i in keep]
+
+    json_snaps = [s for s in index if not in_bulk(s.timestamp)]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         js = list(pool.map(lambda s: rows_from_json(s.timestamp, mt.fetch(s.url)), json_snaps))
     frames = [f.filter(pl.col("ts").is_between(t0, t1)) for f in bulk] + js
     rows = pl.concat(frames) if frames else _empty_rows()
@@ -166,6 +202,8 @@ def fetch_day(mt: MobilityTwin, d: date, workers: int = WORKERS) -> VdDay:
         "index_polls": len(index),
         "bulk_files": [p.url.rsplit("/", 2)[-2] + "/" + p.url.rsplit("/", 1)[-1] for p in chosen],
         "json_polls": len(json_snaps),
+        "bulk_checks": checks,
+        "bulk_dropped": [p.url.rsplit("/", 1)[-1] for p in dropped],
         "polls_not_in_index": int(day.snaps.filter(~pl.col("ts").is_in(pl.Series(sorted(idx_ts), dtype=pl.Int64).implode())).height),
     })
     return day

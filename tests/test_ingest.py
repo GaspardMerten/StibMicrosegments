@@ -157,3 +157,29 @@ def test_shard():
 def test_not_closed_day_refused(tmp_path):
     with pytest.raises(RuntimeError, match="not closed"):
         ingest.ingest_date(FakeMT(), Store(str(tmp_path)), date.today())
+
+
+def test_incomplete_bulk_falls_back_to_json(tmp_path):
+    """A bulk file missing a line (vs the JSON snapshots of the same polls) is replaced by JSON."""
+    mt = FakeMT()
+    part = [{**s, "data": [r for r in s["data"] if str(r["lineId"]) == "55"]} for s in SAMPLE[:2]]
+    mt.blobs["bulk"] = bulk_bytes(part)
+    day = vd.fetch_day(mt, DAY)
+    assert day.stats["bulk_dropped"] == ["bulk"]
+    assert day.stats["bulk_checks"][0]["incomplete"]
+    full = vd.build(sample_rows(), [s["timestamp"] for s in SAMPLE] + [mt.empty_ts])
+    assert day.rows.height == full.rows.height and set(day.rows["line"].unique()) == {"55", "92"}
+    ok = vd.fetch_day(FakeMT(), DAY)
+    assert ok.stats["bulk_dropped"] == [] and not ok.stats["bulk_checks"][0]["incomplete"]
+
+
+def test_partial_source_flag(tmp_path):
+    from datetime import timedelta
+    store = Store(str(tmp_path))
+    d = date(2025, 3, 31)                              # a Monday
+    for i in range(1, 15):
+        x = d - timedelta(days=i)
+        store.write_json(ingest.success_path(x), {"vd": {"lines": 78 if x.weekday() < 5 else 72}})
+    assert ingest.source_check(store, d, 15) == {"partial_source": True, "lines_ref": 78}
+    assert not ingest.source_check(store, d, 76)["partial_source"]
+    assert not ingest.source_check(store, date(2024, 1, 1), 5)["partial_source"]   # no history

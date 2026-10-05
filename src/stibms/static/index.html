@@ -4,302 +4,658 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>STIB micro-segments</title>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<meta name="description" content="Où les trams, bus et métros de la STIB perdent-ils du temps ? Observations par micro-segment, comparaison de périodes et classement du réseau.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
-:root { color-scheme: dark; --bg:#091124; --fg:#eef1f6; --muted:#7f8aa3; --line:#24324f; --card:#101a30; --accent:#F3C300; --bad:#ff8a80; --warn:#d68910; }
-:root[data-theme="light"] { color-scheme: light; --bg:#f7f7f5; --fg:#1d1d1b; --muted:#6b6b66; --line:#d9d9d4; --card:#fff; --accent:#0b5cad; }
-* { box-sizing: border-box; }
-body { margin:0; font:14px/1.45 "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
-header { padding:10px 16px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; z-index:1000; }
-h1 { font-size:16px; margin:0 0 8px; font-weight:600; }
-h1 small { color:var(--muted); font-weight:400; }
-form { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:end; }
-label { display:flex; flex-direction:column; gap:2px; font-size:12px; color:var(--muted); }
-input, select, button { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:4px 6px; }
-input[type=number] { width:70px; }
-button { background:var(--accent); color:#091124; font-weight:600; border-color:var(--accent); cursor:pointer; padding:5px 14px; }
-button:disabled { opacity:.5; cursor:wait; }
-.dow { display:flex; gap:2px; }
-.dow label { flex-direction:row; align-items:center; gap:2px; color:var(--fg); font-size:13px; }
-.badge { display:inline-block; min-width:28px; padding:1px 6px; border-radius:3px; font-weight:600; text-align:center; }
-main { padding:12px 16px 40px; max-width:1500px; margin:0 auto; }
-#status { color:var(--muted); font-size:13px; margin:6px 0; min-height:1.4em; }
+:root {
+  color-scheme: dark;
+  --paper:#091124; --surface:#101a30; --surface-2:#16223d; --line:#24324f;
+  --ink:#eef1f6; --ink-2:#b4bdd0; --ink-3:#7f8aa3; --acc:#F3C300; --bad:#ff8a80; --ok:#5fc48a; --warn:#e7a33e;
+  --serif:"Fraunces", Georgia, serif; --sans:"Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, monospace;
+}
+* { box-sizing:border-box; }
+html, body { margin:0; background:var(--paper); color:var(--ink); font:15px/1.5 var(--sans); }
+a { color:var(--acc); }
+button, input, select { font:inherit; color:var(--ink); }
+.wrap { max-width:1180px; margin:0 auto; padding:0 24px; }
+@media (max-width:600px) { .wrap { padding:0 16px; } }
+
+/* ---------------------------------------------------------------- header + nav */
+.top { border-bottom:1px solid var(--line); background:var(--surface); }
+.top .wrap { display:flex; align-items:center; gap:10px 24px; flex-wrap:wrap; padding-top:12px; padding-bottom:0; }
+.brand { font:800 20px/1 var(--serif); letter-spacing:-.01em; padding-bottom:12px; white-space:nowrap; }
+.brand i { font-style:normal; display:inline-block; background:var(--acc); color:#111; font:700 13px/1 var(--sans); padding:4px 6px; border-radius:4px; margin-right:6px; vertical-align:2px; }
+nav { display:flex; gap:4px; margin-left:auto; overflow-x:auto; }
+nav a { color:var(--ink-2); text-decoration:none; padding:10px 12px 12px; border-bottom:2px solid transparent; white-space:nowrap; font-weight:500; }
+nav a[aria-current=page] { color:var(--ink); border-bottom-color:var(--acc); }
+nav a:hover { color:var(--ink); }
+@media (max-width:600px) { nav { margin-left:0; width:100%; } nav a { flex:1; text-align:center; padding:8px 6px 10px; } .brand { padding-bottom:4px; } }
+
+/* ---------------------------------------------------------------- form */
+.bar { padding:16px 0 4px; }
+.lede { color:var(--ink-2); margin:0 0 14px; max-width:75ch; }
+form { display:flex; flex-wrap:wrap; gap:12px 16px; align-items:flex-end; background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:14px; }
+.fld { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.fld > span, .lbl { font:500 11px/1.2 var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); }
+input[type=date], input[type=number], select { background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:7px 9px; min-height:38px; }
+input[type=number] { width:80px; }
+.dates { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.dates em { color:var(--ink-3); font-style:normal; }
+.go { background:var(--acc); color:#111; border:0; border-radius:10px; font-weight:700; padding:9px 18px; min-height:38px; cursor:pointer; }
+.go:disabled { opacity:.55; cursor:progress; }
+.go:focus-visible, .chip:focus-visible, .linebtn:focus-visible, .seg button:focus-visible { outline:2px solid #fff; outline-offset:2px; }
+.seg { display:inline-flex; border:1px solid var(--line); border-radius:10px; overflow:hidden; flex-wrap:wrap; }
+.seg button { border:0; background:transparent; color:var(--ink-2); padding:7px 11px; cursor:pointer; min-height:36px; }
+.seg button[aria-pressed=true] { background:var(--surface-2); color:var(--ink); box-shadow:inset 0 -2px 0 var(--acc); }
+.presets { display:flex; gap:6px; flex-wrap:wrap; }
+.presets button { background:transparent; border:1px solid var(--line); color:var(--ink-2); border-radius:999px; padding:3px 10px; font-size:13px; cursor:pointer; }
+.presets button:hover { color:var(--ink); border-color:var(--ink-3); }
+details.more { flex-basis:100%; border-top:1px solid var(--line); padding-top:10px; }
+details.more summary { cursor:pointer; color:var(--ink-2); font-size:14px; }
+details.more .opts { display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:10px; align-items:flex-end; }
+.dow { display:flex; gap:4px; flex-wrap:wrap; }
+.dow label { display:inline-flex; align-items:center; justify-content:center; min-width:38px; height:34px; border:1px solid var(--line); border-radius:8px; cursor:pointer; color:var(--ink-2); user-select:none; }
+.dow input { position:absolute; opacity:0; pointer-events:none; }
+.dow label:has(input:checked) { background:var(--surface-2); color:var(--ink); border-color:var(--acc); }
+.periods { display:flex; gap:12px 20px; flex-wrap:wrap; }
+.pa, .pb { display:inline-block; font:700 11px/1 var(--mono); padding:3px 5px; border-radius:4px; margin-right:4px; }
+.pa { background:#4f8fd8; color:#fff; } .pb { background:#e2665a; color:#fff; }
+.check { display:inline-flex; gap:6px; align-items:center; color:var(--ink-2); cursor:pointer; min-height:38px; }
+
+/* ---------------------------------------------------------------- line picker */
+.picker { position:relative; }
+.linebtn { display:flex; align-items:center; gap:8px; background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:5px 10px 5px 6px; min-height:38px; cursor:pointer; max-width:340px; }
+.linebtn .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-2); }
+.linebtn::after { content:"▾"; color:var(--ink-3); margin-left:2px; }
+.lb { display:inline-flex; align-items:center; justify-content:center; min-width:30px; height:26px; padding:0 6px; border-radius:5px; font:700 14px/1 var(--sans); background:#666; color:#fff; flex:none; }
+.panel { position:absolute; z-index:2000; top:calc(100% + 6px); left:0; width:min(560px, calc(100vw - 32px)); max-height:min(70vh, 560px); overflow:auto; background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:12px; box-shadow:0 18px 50px rgba(0,0,0,.5); }
+.panel[hidden] { display:none; }
+.panel input { width:100%; background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:8px; }
+.panel h4 { margin:10px 0 6px; font:500 11px/1 var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); }
+.chips { display:flex; flex-wrap:wrap; gap:6px; }
+.chip { border:0; background:none; padding:0; cursor:pointer; border-radius:6px; }
+.chip .lb { min-width:38px; height:32px; font-size:15px; }
+.chip[aria-disabled=true] { opacity:.35; }
+.chip[aria-selected=true] .lb { outline:2px solid var(--ink); outline-offset:2px; }
+@media (max-width:600px) { .picker { width:100%; } .linebtn { max-width:none; width:100%; } }
+
+/* ---------------------------------------------------------------- status + notices */
+#status { display:flex; align-items:center; gap:10px; min-height:28px; margin:12px 0 4px; color:var(--ink-2); font-size:14px; }
 #status.err { color:var(--bad); }
-.card { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin:10px 0; }
-.card h2 { font-size:14px; margin:0 0 8px; }
-#cal { display:flex; flex-wrap:wrap; gap:2px; }
-#cal div { width:14px; height:14px; border-radius:2px; }
-.legend { font-size:12px; color:var(--muted); display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; }
-.legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:3px; vertical-align:-1px; }
-iframe { width:100%; height:calc(100vh - 120px); min-height:700px; border:0; border-radius:6px; background:var(--bg); }
-table { border-collapse:collapse; width:100%; font-size:13px; }
-th, td { text-align:left; padding:3px 6px; border-bottom:1px solid var(--line); }
-th { color:var(--muted); font-weight:500; }
-.heat { width:100%; overflow-x:auto; }
-canvas { display:block; }
-#map { height:420px; border-radius:6px; }
-.row { display:flex; gap:12px; flex-wrap:wrap; }
-.row > * { flex:1 1 420px; min-width:0; }
-a { color:var(--accent); }
-.muted { color:var(--muted); }
+.spin { width:16px; height:16px; border:2px solid var(--line); border-top-color:var(--acc); border-radius:50%; animation:sp .8s linear infinite; flex:none; }
+@keyframes sp { to { transform:rotate(360deg); } }
+.notice { background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:10px; padding:10px 14px; margin:8px 0; color:var(--ink-2); font-size:14px; }
+.notice.info { border-left-color:#4f8fd8; }
+.notice.bad { border-left-color:var(--bad); }
+.notice b { color:var(--ink); }
+.cov { display:flex; flex-wrap:wrap; gap:6px 18px; align-items:center; font-size:14px; color:var(--ink-2); margin:6px 0; }
+.cov .strip { display:flex; flex-wrap:wrap; gap:2px; }
+.cov .strip i { width:9px; height:14px; border-radius:2px; display:block; }
+.legend { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--ink-3); }
+.legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; }
+
+/* ---------------------------------------------------------------- analysis frame */
+#view { margin-top:6px; }
+#view iframe { display:block; width:100%; border:0; background:var(--paper); height:100vh; height:100dvh; }
+@media (max-width:899px) { #view iframe { height:1600px; } }
+.empty { padding:60px 0; text-align:center; color:var(--ink-3); }
+
+/* ---------------------------------------------------------------- ranking */
+.rk-sum { font-size:16px; color:var(--ink-2); max-width:80ch; margin:10px 0 14px; }
+.rk-sum b { color:var(--ink); }
+.tiles { display:grid; grid-template-columns:repeat(4, 1fr); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:14px; overflow:hidden; margin:8px 0 16px; }
+.tile { background:var(--surface); padding:14px 16px; }
+.tile b { display:block; font:700 26px/1.1 var(--serif); font-variant-numeric:tabular-nums; }
+.tile span { color:var(--ink-2); font-size:13px; }
+@media (max-width:700px) { .tiles { grid-template-columns:repeat(2, 1fr); } }
+#rkmap { height:520px; border-radius:14px; border:1px solid var(--line); background:#0b1224; }
+@media (max-width:700px) { #rkmap { height:380px; } }
+.rkgrid { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1.1fr); gap:16px; align-items:start; }
+.rkgrid > * { min-width:0; }
+@media (min-width:1000px) { .rkgrid .mapcol { position:sticky; top:12px; } }
+@media (max-width:999px) { .rkgrid { grid-template-columns:1fr; } }
+.tbl { width:100%; border-collapse:collapse; font-size:14px; }
+.tbl th { text-align:left; font:500 11px/1.2 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); padding:6px 8px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--paper); }
+.tbl td { padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
+.tbl td.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.tbl tr { cursor:pointer; }
+.tbl tr:hover td, .tbl tr.sel td { background:var(--surface); }
+.tbl .rk { font:600 13px var(--mono); color:var(--ink-3); }
+.tbl .str b { font-weight:600; }
+.tbl .str small { display:block; color:var(--ink-3); font-size:12px; }
+.tbl .lines { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+.tbl .lines a { text-decoration:none; }
+.tbl .lines .lb { min-width:26px; height:22px; font-size:12px; }
+.bar-in { height:4px; background:var(--acc); border-radius:2px; margin-top:4px; opacity:.85; }
+.progress { height:6px; background:var(--line); border-radius:3px; overflow:hidden; width:min(420px, 100%); }
+.progress div { height:100%; background:var(--acc); transition:width .4s; }
+.rkicon { background:var(--acc); color:#111; font:700 11px/18px var(--sans); text-align:center; border-radius:50%; width:20px !important; height:20px !important; margin:-10px 0 0 -10px !important; border:1px solid #111; }
+.leaflet-container { font:13px var(--sans); }
+.method { color:var(--ink-3); font-size:13px; max-width:90ch; margin:18px 0 40px; }
+footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px solid var(--line); margin-top:20px; }
+[hidden] { display:none !important; }
 </style>
 </head>
 <body>
-<header>
-  <h1>Où les véhicules STIB s'attardent-ils ? <small>observations par micro-segment</small></h1>
-  <form id="f">
-    <label>Ligne <select id="line" name="line" required></select></label>
-    <label>Du <input type="date" id="from" name="from" required></label>
-    <label>Au <input type="date" id="to" name="to" required></label>
-    <label>Jours
-      <span class="dow" id="dow"></span>
-    </label>
-    <label>Segment (m) <input type="number" id="seg" name="seg" min="5" max="500" step="5" value="30"></label>
-    <label>Jours fériés
-      <select id="holidays" name="holidays"><option value="exclude">exclus</option><option value="include">inclus</option></select>
-    </label>
-    <label>Référence <select id="ref" name="ref"><option value="20-23">20-23 h</option><option value="21-23">21-23 h</option></select></label>
-    <button id="go" type="submit">Afficher</button>
-  </form>
-</header>
-<main>
-  <div id="status"></div>
-  <div class="card" id="covcard" hidden>
-    <h2>Couverture du flux <span class="muted" id="covsum"></span></h2>
-    <div id="cal"></div>
-    <div class="legend">
-      <span><i style="background:#2e8b57"></i>inclus</span><span><i style="background:#d68910"></i>couverture faible</span>
-      <span><i style="background:#c0392b"></i>pas de données</span><span><i style="background:#7d3c98"></i>férié</span>
-      <span><i style="background:#999"></i>non sélectionné</span>
-    </div>
+<div class="top">
+  <div class="wrap">
+    <div class="brand"><i>STIB</i>micro-segments</div>
+    <nav aria-label="Sections">
+      <a href="/" data-tab="one">Une ligne</a>
+      <a href="/comparer" data-tab="cmp">Comparer</a>
+      <a href="/classement" data-tab="rank">Classement du réseau</a>
+    </nav>
   </div>
-  <div class="card" id="vercard" hidden><h2>Versions GTFS</h2><div id="versions"></div></div>
-  <div id="view"></div>
+</div>
+
+<main class="wrap">
+  <div id="pending" class="notice info" hidden></div>
+
+  <!-- ============================================================ line / compare -->
+  <section id="lineview" hidden>
+    <div class="bar">
+      <p class="lede" id="lede1">Chaque ligne est découpée en tronçons de 30 m. On compte combien de fois un véhicule y est vu (toutes les 20 s) : là où ce nombre dépasse celui du soir, les véhicules perdent du temps.</p>
+      <form id="f" autocomplete="off">
+        <div class="fld picker">
+          <span>Ligne</span>
+          <button type="button" class="linebtn" id="linebtn" aria-haspopup="listbox" aria-expanded="false"><span class="lb" id="linebadge">…</span><span class="nm" id="linename">Chargement…</span></button>
+          <div class="panel" id="panel" hidden>
+            <input type="search" id="lsearch" placeholder="Numéro ou nom de ligne" aria-label="Chercher une ligne">
+            <div id="lgroups" role="listbox" aria-label="Lignes"></div>
+          </div>
+        </div>
+        <div class="fld" id="single">
+          <span>Période</span>
+          <div class="dates"><input type="date" id="from" aria-label="Du" required><em>→</em><input type="date" id="to" aria-label="Au" required></div>
+        </div>
+        <div class="periods" id="double" hidden>
+          <div class="fld"><span><b class="pa">A</b>Avant</span>
+            <div class="dates"><input type="date" id="a1" aria-label="Période A, du"><em>→</em><input type="date" id="a2" aria-label="Période A, au"></div></div>
+          <div class="fld"><span><b class="pb">B</b>Après</span>
+            <div class="dates"><input type="date" id="b1" aria-label="Période B, du"><em>→</em><input type="date" id="b2" aria-label="Période B, au"></div></div>
+        </div>
+        <button class="go" id="go" type="submit">Afficher</button>
+        <div class="presets" id="presets" style="flex-basis:100%"></div>
+        <details class="more">
+          <summary>Options : jours, longueur des tronçons, jours fériés, référence</summary>
+          <div class="opts">
+            <div class="fld"><span>Jours</span><div class="dow" id="dow"></div></div>
+            <label class="fld"><span>Tronçons (m)</span><input type="number" id="seg" min="5" max="500" step="5" value="30"></label>
+            <label class="fld"><span>Jours fériés</span><select id="holidays"><option value="exclude">exclus</option><option value="include">inclus</option></select></label>
+            <label class="fld"><span>Référence du soir</span><select id="ref"><option value="20-23">20 h – 23 h</option><option value="21-23">21 h – 23 h</option></select></label>
+          </div>
+        </details>
+      </form>
+    </div>
+    <div id="status" role="status" aria-live="polite"></div>
+    <div id="notes"></div>
+    <div id="view"></div>
+  </section>
+
+  <!-- ============================================================ ranking -->
+  <section id="rankview" hidden>
+    <div class="bar">
+      <p class="lede">Les tronçons du réseau où les véhicules STIB perdent le plus de temps, toutes lignes confondues : temps perdu par passage par rapport au soir (20 h – 23 h), multiplié par le nombre de passages, de 6 h à 21 h. Les lignes qui partagent un tronçon s'additionnent.</p>
+      <form id="rf" autocomplete="off">
+        <div class="fld"><span>Période</span>
+          <div class="dates"><input type="date" id="rfrom" aria-label="Du"><em>→</em><input type="date" id="rto" aria-label="Au"></div></div>
+        <div class="fld"><span>Mode</span><div class="seg" id="rmode"></div></div>
+        <label class="fld"><span>Tronçons</span><select id="rtop"><option>20</option><option selected>50</option><option>100</option></select></label>
+        <button class="go" id="rgo" type="submit">Classer</button>
+        <details class="more">
+          <summary>Options : jours, terminus</summary>
+          <div class="opts">
+            <div class="fld"><span>Jours</span><div class="dow" id="rdow"></div></div>
+            <label class="check"><input type="checkbox" id="rterm"> Inclure les tronçons de terminus (temps de régulation)</label>
+          </div>
+        </details>
+      </form>
+    </div>
+    <div id="rstatus" role="status" aria-live="polite" style="margin:12px 0 4px"></div>
+    <div id="rout"></div>
+  </section>
+
+  <footer>Données : STIB vehicle-distance et punctuality via <a href="https://mobilitytwin.brussels">MobilityTwin.Brussels</a>, GTFS STIB. Méthode : paquet <a href="https://pypi.org/project/microsegments/">microsegments</a>. <a href="/api/docs">API</a>.</footer>
 </main>
+
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const DOW = ["Lu","Ma","Me","Je","Ve","Sa","Di"];
-const REASONS = {low_coverage:"couverture faible", no_data:"pas de données", frozen:"flux figé", holiday:"férié",
-                 excluded:"exclu", line_absent:"ligne absente", not_ingested:"non ingéré", deviation:"déviation"};
-let LINES = [];
-
-for (let i = 0; i < 7; i++) {
-  const l = document.createElement("label");
-  l.innerHTML = `<input type="checkbox" value="${i}" ${i < 5 ? "checked" : ""}>${DOW[i]}`;
-  $("dow").appendChild(l);
-}
+const DOW = ["Lu", "Ma", "Me", "Je", "Ve", "Sa", "Di"];
+const MODE_FR = {metro: "Métro", tram: "Tram", bus: "Bus", night: "Bus de nuit", autre: "Autres"};
+const MONTHS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+let LINES = [], INFO = null, TAB = "one";
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 const iso = d => d.toISOString().slice(0, 10);
 const addDays = (s, n) => { const d = new Date(s + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return iso(d); };
-const status = (msg, err) => { $("status").textContent = msg || ""; $("status").className = err ? "err" : ""; };
+const fdate = s => { const d = new Date(s + "T12:00:00Z"); return `${d.getUTCDate() === 1 ? "1er" : d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`; };
+const fmonth = m => { const [y, mm] = m.split("-"); return `${MONTHS[+mm - 1]} ${y}`; };
+const nf = (v, d = 0) => v == null ? "–" : (+v).toLocaleString("fr-BE", {minimumFractionDigits: d, maximumFractionDigits: d});
+const monthEnd = m => { const [y, mm] = m.split("-").map(Number); return iso(new Date(Date.UTC(y, mm, 0, 12))); };
 
-function params() {
-  const p = new URLSearchParams();
-  p.set("line", $("line").value); p.set("from", $("from").value); p.set("to", $("to").value);
-  const dows = [...$("dow").querySelectorAll("input:checked")].map(x => x.value);
-  p.set("dow", dows.join(",") || "0"); p.set("seg", $("seg").value || "30");
-  p.set("holidays", $("holidays").value); p.set("ref", $("ref").value);
-  return p;
-}
-function fromUrl() {
-  const u = new URLSearchParams(location.search);
-  for (const k of ["from", "to", "seg", "holidays", "ref"]) if (u.get(k)) $(k).value = u.get(k);
-  if (u.get("dow")) {
-    const s = new Set(u.get("dow").split(",").flatMap(x => x.includes("-") ?
-      Array.from({length: +x.split("-")[1] - +x.split("-")[0] + 1}, (_, i) => String(+x.split("-")[0] + i)) : [x]));
-    $("dow").querySelectorAll("input").forEach(i => i.checked = s.has(i.value));
-  }
-  return u.get("line");
-}
 async function getJSON(url) {
   const r = await fetch(url);
-  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch (e) {} throw new Error(m); }
-  return r.json();
+  let body = null;
+  try { body = await r.json(); } catch (e) { /* not JSON */ }
+  if (!r.ok && r.status !== 202) throw new Error((body && body.detail) || r.statusText || ("HTTP " + r.status));
+  return {status: r.status, body};
 }
 
-async function init() {
-  const want = fromUrl();
-  const L = await getJSON("/api/lines");
-  LINES = L.lines;
-  const modes = {metro: "Métro", tram: "Tram", bus: "Bus"};
+// ---------------------------------------------------------------- weekday pickers
+function dowBoxes(el, name) {
+  for (let i = 0; i < 7; i++) {
+    const l = document.createElement("label");
+    l.innerHTML = `<input type="checkbox" name="${name}" value="${i}" ${i < 5 ? "checked" : ""}>${DOW[i]}`;
+    el.appendChild(l);
+  }
+}
+dowBoxes($("dow"), "dow"); dowBoxes($("rdow"), "rdow");
+function dowGet(el) {
+  const v = [...el.querySelectorAll("input:checked")].map(x => +x.value);
+  if (!v.length) return "0-4";
+  const contiguous = v.every((x, i) => i === 0 || x === v[i - 1] + 1);
+  return contiguous && v.length > 1 ? `${v[0]}-${v[v.length - 1]}` : v.join(",");
+}
+function dowSet(el, s) {
+  if (!s) return;
+  const set = new Set();
+  for (const part of s.split(",")) {
+    if (part.includes("-")) { const [a, b] = part.split("-").map(Number); for (let i = a; i <= b; i++) set.add(i); }
+    else if (part !== "") set.add(+part);
+  }
+  el.querySelectorAll("input").forEach(i => i.checked = set.has(+i.value));
+}
+
+// ---------------------------------------------------------------- lines
+const lineOf = id => LINES.find(l => l.line === id);
+const modeKey = l => /^N/i.test(l.line) ? "night" : (l.mode === "metro" || l.mode === "tram" || l.mode === "bus" ? l.mode : "autre");
+function badge(l, cls = "lb") {
+  const bg = l && l.color ? "#" + l.color : "#555", fg = l && l.text_color ? "#" + l.text_color : "#fff";
+  return `<span class="${cls}" style="background:${bg};color:${fg}">${esc(l ? l.line : "?")}</span>`;
+}
+function niceName(n) {
+  if (!n) return "";
+  return n.toLowerCase().replace(/(^|[\s\-'(])([a-zà-ÿ])/g, (m, a, b) => a + b.toUpperCase()).replace(/ - /g, " – ");
+}
+function drawPicker(filter = "") {
+  const f = filter.trim().toLowerCase();
   const groups = {};
-  for (const l of LINES) (groups[l.mode || "autre"] ||= []).push(l);
-  for (const [m, ls] of Object.entries(groups)) {
-    const og = document.createElement("optgroup"); og.label = modes[m] || m;
-    for (const l of ls) {
-      const o = document.createElement("option"); o.value = l.line;
-      o.textContent = `${l.line} · ${(l.name || "").toLowerCase()}${l.available ? "" : " (pas de données)"}`;
-      og.appendChild(o);
+  for (const l of LINES) {
+    if (f && !(l.line.toLowerCase().startsWith(f) || (l.name || "").toLowerCase().includes(f))) continue;
+    (groups[modeKey(l)] ||= []).push(l);
+  }
+  const cur = $("linebtn").dataset.line;
+  $("lgroups").innerHTML = ["metro", "tram", "bus", "night", "autre"].filter(m => groups[m]).map(m =>
+    `<h4>${MODE_FR[m]}</h4><div class="chips">` + groups[m].map(l =>
+      `<button type="button" class="chip" role="option" data-line="${esc(l.line)}" aria-selected="${l.line === cur}"
+        aria-disabled="${!l.available}" title="${esc(l.line + " · " + niceName(l.name) + (l.available ? "" : " (pas encore de données)"))}">${badge(l)}</button>`).join("") + "</div>").join("")
+    || `<p class="lbl" style="margin:8px 0">Aucune ligne ne correspond.</p>`;
+}
+function setLine(id, keepDates) {
+  const l = lineOf(id);
+  $("linebtn").dataset.line = id;
+  $("linebadge").outerHTML = badge(l, "lb").replace('class="lb"', 'class="lb" id="linebadge"');
+  $("linename").textContent = l ? niceName(l.name) || "Ligne " + id : "Ligne " + id;
+  const av = l && l.available;
+  for (const k of ["from", "to", "a1", "a2", "b1", "b2"]) {
+    $(k).min = av ? av.from : (INFO && INFO.ingested.from) || "";
+    $(k).max = av ? av.to : (INFO && INFO.ingested.to) || "";
+  }
+  if (!keepDates || !$("from").value) defaultDates(l);
+  presets();
+}
+function defaultDates(l) {
+  const av = l && l.available;
+  const d = av && av.default ? av.default : (INFO ? {from: addDays(INFO.ingested.to, -89), to: INFO.ingested.to} : null);
+  if (!d) return;
+  $("from").value = d.from; $("to").value = d.to;
+  // compare: the default period split in two halves
+  const mid = addDays(d.from, Math.floor((new Date(d.to) - new Date(d.from)) / 864e5 / 2));
+  $("a1").value = d.from; $("a2").value = mid; $("b1").value = addDays(mid, 1); $("b2").value = d.to;
+}
+function presets() {
+  const l = lineOf($("linebtn").dataset.line), av = l && l.available;
+  if (!av || TAB !== "one") { $("presets").innerHTML = ""; return; }
+  const ms = av.months.filter(m => monthEnd(m) <= av.to);
+  const opts = [];
+  if (ms.length) opts.push(["Dernier mois complet", ms[ms.length - 1] + "-01", monthEnd(ms[ms.length - 1])]);
+  if (ms.length >= 3) opts.push(["3 derniers mois", ms[ms.length - 3] + "-01", monthEnd(ms[ms.length - 1])]);
+  if (ms.length >= 6) opts.push(["6 derniers mois", ms[ms.length - 6] + "-01", monthEnd(ms[ms.length - 1])]);
+  opts.push(["30 derniers jours", addDays(av.to, -29), av.to]);
+  $("presets").innerHTML = `<span class="lbl" style="align-self:center">Raccourcis</span>` +
+    opts.map(([t, a, b]) => `<button type="button" data-a="${a < av.from ? av.from : a}" data-b="${b}">${t}</button>`).join("");
+}
+$("presets").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  $("from").value = b.dataset.a; $("to").value = b.dataset.b; runLine();
+});
+$("linebtn").addEventListener("click", () => {
+  const open = $("panel").hidden;
+  $("panel").hidden = !open; $("linebtn").setAttribute("aria-expanded", String(open));
+  if (open) { drawPicker($("lsearch").value); setTimeout(() => $("lsearch").focus(), 0); }
+});
+$("lsearch").addEventListener("input", e => drawPicker(e.target.value));
+$("lsearch").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); const c = $("lgroups").querySelector(".chip"); if (c) c.click(); }
+  if (e.key === "Escape") closePanel();
+});
+$("lgroups").addEventListener("click", e => {
+  const c = e.target.closest(".chip"); if (!c) return;
+  setLine(c.dataset.line, false); closePanel(); runLine();
+});
+function closePanel() { $("panel").hidden = true; $("linebtn").setAttribute("aria-expanded", "false"); }
+document.addEventListener("click", e => { if (!e.target.closest(".picker")) closePanel(); });
+
+// ---------------------------------------------------------------- tabs + URL state
+function setTab(t, push) {
+  TAB = t;
+  document.querySelectorAll("nav a").forEach(a => { if (a.dataset.tab === t) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
+  $("lineview").hidden = t === "rank"; $("rankview").hidden = t !== "rank";
+  $("single").hidden = t !== "one"; $("double").hidden = t !== "cmp";
+  $("go").textContent = t === "cmp" ? "Comparer" : "Afficher";
+  $("lede1").textContent = t === "cmp"
+    ? "Deux périodes comparées tronçon par tronçon : où les véhicules passent-ils plus vite ou plus lentement qu'avant ? La comparaison porte sur le temps passé par véhicule, quel que soit le nombre de passages."
+    : "Chaque ligne est découpée en tronçons de 30 m. On compte combien de fois un véhicule y est vu (toutes les 20 s) : là où ce nombre dépasse celui du soir, les véhicules perdent du temps.";
+  document.title = {one: "Une ligne", cmp: "Comparer deux périodes", rank: "Classement du réseau"}[t] + " · STIB micro-segments";
+  presets();
+}
+document.querySelectorAll("nav a").forEach(a => a.addEventListener("click", e => {
+  e.preventDefault();
+  const t = a.dataset.tab;
+  if (t === TAB) return;
+  const line = $("linebtn").dataset.line;
+  history.pushState(null, "", a.getAttribute("href") + (t !== "rank" && line ? "?line=" + encodeURIComponent(line) : ""));
+  setTab(t);
+  if (t === "rank") runRank(); else if (line && lineOf(line) && lineOf(line).available) runLine();
+}));
+window.addEventListener("popstate", () => boot(false));
+
+function lineParams() {
+  const p = new URLSearchParams();
+  p.set("line", $("linebtn").dataset.line);
+  if (TAB === "cmp") { p.set("a", `${$("a1").value}..${$("a2").value}`); p.set("b", `${$("b1").value}..${$("b2").value}`); }
+  else { p.set("from", $("from").value); p.set("to", $("to").value); }
+  p.set("dow", dowGet($("dow")));
+  if ($("seg").value && $("seg").value !== "30") p.set("seg", $("seg").value);
+  if ($("holidays").value !== "exclude") p.set("holidays", $("holidays").value);
+  if ($("ref").value !== "20-23") p.set("ref", $("ref").value);
+  return p;
+}
+
+// ---------------------------------------------------------------- status
+let TIMER = null;
+function busy(el, msg, hint) {
+  clearInterval(TIMER);
+  const t0 = performance.now();
+  const draw = () => {
+    const s = Math.round((performance.now() - t0) / 1000);
+    el.className = ""; el.innerHTML = `<span class="spin"></span><span>${msg}${s >= 2 ? ` · ${s} s` : ""}${s >= 6 && hint ? ` — ${hint}` : ""}</span>`;
+  };
+  draw(); TIMER = setInterval(draw, 1000);
+  return () => (performance.now() - t0) / 1000;
+}
+function done(el, msg, err) { clearInterval(TIMER); el.className = err ? "err" : ""; el.innerHTML = msg ? `<span>${msg}</span>` : ""; }
+
+// ---------------------------------------------------------------- coverage summary
+const REASONS = {low_coverage: "flux incomplet", no_data: "pas de données", frozen: "flux figé", holiday: "férié",
+  line_absent: "ligne absente du flux", not_ingested: "pas encore collecté", not_derived: "en préparation", deviation: "déviation"};
+const COL = {ok: "#5fc48a", low_coverage: "#e7a33e", line_absent: "#c0392b", no_data: "#c0392b", not_ingested: "#3a4560", not_derived: "#4f8fd8", holiday: "#8e5bb5", off: "#26324d"};
+function covSummary(days, dows, holidays, label) {
+  const sel = days.filter(d => dows.has(d.dow));
+  const cls = d => d.holiday && holidays === "exclude" ? "holiday" : d.status;
+  const ok = sel.filter(d => cls(d) === "ok").length;
+  const by = {};
+  for (const d of sel) if (cls(d) !== "ok") (by[cls(d)] ||= []).push(d);
+  const strip = days.map(d => `<i style="background:${dows.has(d.dow) ? COL[cls(d)] || "#c0392b" : COL.off}" title="${d.date} · ${DOW[d.dow]} · ${dows.has(d.dow) ? (cls(d) === "ok" ? "utilisable" : (d.holiday ? d.holiday : REASONS[d.status] || d.status)) : "non sélectionné"}"></i>`).join("");
+  const parts = Object.entries(by).map(([k, v]) => `${v.length} ${REASONS[k] || k}`);
+  return {ok, sel: sel.length, by, html: `<div class="cov">${label ? `<b>${label}</b>` : ""}<span><b>${ok}</b> jour${ok > 1 ? "s" : ""} utilisable${ok > 1 ? "s" : ""} sur ${sel.length}${parts.length ? " (" + parts.join(", ") + ")" : ""}</span><span class="strip">${strip}</span></div>`};
+}
+function covNotes(sum, from, to) {
+  const notes = [];
+  const nd = sum.by.not_derived || [], ni = sum.by.not_ingested || [], la = sum.by.line_absent || [];
+  if (nd.length) {
+    const ms = [...new Set(nd.map(d => d.date.slice(0, 7)))].map(fmonth);
+    notes.push(`<div class="notice info"><b>Données en cours de préparation.</b> Les observations de ${ms.join(", ")} sont collectées mais pas encore calculées${sum.ok ? " : ces jours-là sont laissés de côté pour l'instant" : ""}. Le calcul tourne en arrière-plan ; réessayez dans quelques minutes.</div>`);
+  }
+  if (ni.length && ni.length === sum.sel) notes.push(`<div class="notice"><b>Pas encore de données</b> pour cette période : la collecte va jusqu'au ${fdate(INFO.ingested.to)}.</div>`);
+  if (la.length) notes.push(`<div class="notice">${la.length === 1 ? "Un jour est écarté" : la.length + " jours sont écartés"} parce que la ligne manque dans le flux STIB (${la.slice(0, 5).map(d => fdate(d.date)).join(", ")}${la.length > 5 ? "…" : ""}) : ces jours-là, STIB n'a publié qu'une partie du réseau.</div>`);
+  return notes.join("");
+}
+
+// ---------------------------------------------------------------- one line / two periods
+let RUN = 0;
+async function runLine() {
+  const line = $("linebtn").dataset.line;
+  if (!line) return;
+  const p = lineParams();
+  history.replaceState(null, "", location.pathname + "?" + p);
+  const me = ++RUN;
+  $("go").disabled = true; $("notes").innerHTML = "";
+  const elapsed = busy($("status"), TAB === "cmp" ? `Comparaison de la ligne ${esc(line)}` : `Calcul de la ligne ${esc(line)}`,
+    TAB === "cmp" ? "une comparaison prend jusqu'à une minute la première fois" : "la première fois, quelques mois prennent 10 à 40 s");
+  try {
+    const checked = [...$("dow").querySelectorAll("input:checked")].map(x => +x.value);
+    const dows = new Set(checked.length ? checked : [0, 1, 2, 3, 4]);
+    const periods = TAB === "cmp" ? [["A", $("a1").value, $("a2").value], ["B", $("b1").value, $("b2").value]] : [["", $("from").value, $("to").value]];
+    for (const [, a, b] of periods) if (!a || !b || a > b) throw new Error("Choisissez des dates de début et de fin dans l'ordre.");
+    const covs = await Promise.all(periods.map(([, a, b]) => getJSON(`/api/coverage?line=${encodeURIComponent(line)}&from=${a}&to=${b}`)));
+    if (me !== RUN) return;
+    let html = "", usable = true;
+    const merged = {ok: 0, sel: 0, by: {}};
+    covs.forEach((c, i) => {
+      const s = covSummary(c.body.days, dows, $("holidays").value, periods[i][0] ? `Période ${periods[i][0]}` : "");
+      html += s.html;
+      merged.ok += s.ok; merged.sel += s.sel;
+      for (const [k, v] of Object.entries(s.by)) (merged.by[k] ||= []).push(...v);
+      if (!s.ok) usable = false;
+    });
+    $("notes").innerHTML = html + covNotes(merged);
+    if (!usable) {
+      done($("status"), "Aucun jour utilisable : choisissez une autre période ou d'autres jours.", true);
+      $("view").innerHTML = ""; $("go").disabled = false; return;
     }
-    $("line").appendChild(og);
+    await showFrame(p, me, elapsed);
+  } catch (e) {
+    if (me === RUN) { done($("status"), esc(e.message), true); $("view").innerHTML = ""; }
+  }
+  if (me === RUN) $("go").disabled = false;
+}
+function showFrame(p, me, elapsed) {
+  return new Promise(resolve => {
+    $("view").innerHTML = `<iframe src="/view?${p}" title="Analyse de la ligne ${esc(p.get("line"))}"></iframe>`;
+    const fr = $("view").querySelector("iframe");
+    const onMsg = ev => {
+      if (ev.source !== fr.contentWindow || !ev.data || !ev.data.ms) return;
+      window.removeEventListener("message", onMsg);
+      if (me !== RUN) return resolve();
+      if (ev.data.ms === "error") { done($("status"), esc(ev.data.message), true); $("view").innerHTML = ""; }
+      else { done($("status"), `Ligne ${esc(p.get("line"))} · prêt en ${nf(elapsed(), 1)} s`); fitFrame(fr); }
+      resolve();
+    };
+    window.addEventListener("message", onMsg);
+  });
+}
+function fitFrame(fr) {
+  // narrow screens: the frame takes the height of its page (no scroll inside a scroll)
+  if (window.innerWidth >= 900) return;
+  const set = () => { try { fr.style.height = fr.contentDocument.documentElement.scrollHeight + "px"; } catch (e) {} };
+  set();
+  try { new ResizeObserver(set).observe(fr.contentDocument.body); } catch (e) {}
+}
+$("f").addEventListener("submit", e => { e.preventDefault(); runLine(); });
+
+// ---------------------------------------------------------------- ranking
+const RMODES = [["all", "Tous"], ["tram", "Tram"], ["bus", "Bus"], ["metro", "Métro"]];
+$("rmode").innerHTML = RMODES.map(([k, t]) => `<button type="button" data-mode="${k}" aria-pressed="${k === "all"}">${t}</button>`).join("");
+$("rmode").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  $("rmode").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  runRank();
+});
+const rmode = () => ($("rmode").querySelector("[aria-pressed=true]") || {}).dataset?.mode || "all";
+function rankParams() {
+  const p = new URLSearchParams();
+  if ($("rfrom").value) p.set("from", $("rfrom").value);
+  if ($("rto").value) p.set("to", $("rto").value);
+  p.set("dow", dowGet($("rdow")));
+  p.set("mode", rmode()); p.set("top", $("rtop").value);
+  if ($("rterm").checked) p.set("terminus", "true");
+  return p;
+}
+let RMAP = null, RLAYERS = [], RK = 0;
+async function runRank() {
+  const p = rankParams();
+  history.replaceState(null, "", "/classement?" + p);
+  const me = ++RK;
+  $("rgo").disabled = true;
+  busy($("rstatus"), "Classement en cours", "un nouveau choix de période demande de calculer chaque ligne : comptez quelques minutes");
+  try {
+    for (;;) {
+      const r = await getJSON("/api/ranking?" + p);
+      if (me !== RK) return;
+      if (r.status === 202) {
+        const b = r.body || {};
+        clearInterval(TIMER);
+        $("rstatus").innerHTML = `<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><span class="spin"></span><span>Calcul en cours : ${b.total ? `${b.done} lignes sur ${b.total}` : "une autre requête calcule déjà ce classement"}</span>${b.total ? `<div class="progress"><div style="width:${Math.round(100 * b.done / b.total)}%"></div></div>` : ""}</div>`;
+        if (b.busy) await new Promise(res => setTimeout(res, 3000));
+        continue;
+      }
+      drawRank(r.body);
+      done($("rstatus"), "");
+      break;
+    }
+  } catch (e) {
+    if (me === RK) { done($("rstatus"), esc(e.message), true); $("rout").innerHTML = ""; }
+  }
+  if (me === RK) $("rgo").disabled = false;
+}
+$("rf").addEventListener("submit", e => { e.preventDefault(); runRank(); });
+$("rterm").addEventListener("change", runRank);
+$("rtop").addEventListener("change", runRank);
+
+function heat(t) {
+  const s = [[255, 230, 0], [253, 141, 60], [227, 26, 28], [189, 0, 90]];
+  t = Math.max(0, Math.min(1, t)) * (s.length - 1);
+  const i = Math.min(Math.floor(t), s.length - 2), u = t - i;
+  return `rgb(${s[i].map((a, k) => Math.round(a + (s[i + 1][k] - a) * u)).join(",")})`;
+}
+function drawRank(R) {
+  const q = R.query, S = R.stretches || [];
+  if (!$("rfrom").value) $("rfrom").value = q.first;
+  if (!$("rto").value) $("rto").value = q.last;
+  const daysTxt = q.dow.length === 5 && q.dow.join() === "0,1,2,3,4" ? "jours ouvrables" : "jours " + q.dow.map(d => DOW[d]).join(", ");
+  const modeTxt = {all: "toutes les lignes", tram: "les trams", bus: "les bus", metro: "le métro"}[q.mode];
+  if (!S.length) {
+    $("rout").innerHTML = `<div class="notice">Aucun tronçon à classer pour ${modeTxt} sur cette période (${R.lines_used} ligne${R.lines_used > 1 ? "s" : ""} avec des données).</div>`;
+    return;
+  }
+  const top = S.reduce((a, s) => a + Math.max(0, s.veh_h_day), 0);
+  const max = Math.max(...S.map(s => s.veh_h_day));
+  $("rout").innerHTML = `
+    <p class="rk-sum">Du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b>, ${daysTxt}, ${modeTxt} (${R.lines_used} lignes) :
+      les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> par rapport au soir,
+      soit environ <b>${nf(top * R.days_per_year / 1000, 1)} milliers d'heures par an</b>.</p>
+    <div class="tiles">
+      <div class="tile"><b>${nf(S[0].veh_h_day, 1)} h</b><span>par jour sur le tronçon n° 1, ${esc(S[0].from)} → ${esc(S[0].to)}</span></div>
+      <div class="tile"><b>${nf(top, 0)} h</b><span>par jour sur les ${S.length} premiers tronçons</span></div>
+      <div class="tile"><b>${nf(R.total_veh_h_day, 0)} h</b><span>par jour sur tout le réseau (tronçons en perte)</span></div>
+      <div class="tile"><b>${R.lines_used}</b><span>lignes analysées${R.lines_total > R.lines_used ? ` sur ${R.lines_total}` : ""}</span></div>
+    </div>
+    <div class="rkgrid">
+      <div class="mapcol"><div id="rkmap"></div></div>
+      <div><table class="tbl"><thead><tr><th>#</th><th>Tronçon et lignes</th><th style="text-align:right">h-véh. / jour</th><th style="text-align:right">par an</th><th style="text-align:right" title="secondes perdues par passage, par rapport au soir">s / passage</th></tr></thead>
+      <tbody>${S.map((s, i) => `<tr data-i="${i}">
+        <td class="rk">${s.rank}</td>
+        <td class="str"><b>${esc(s.from)} → ${esc(s.to)}</b>
+          <small>${nf(s.len_m)} m · ${nf(s.passages_day)} passages / jour · réf. de ligne : ${nf(s.veh_h_day_line, 1)} h / jour</small>
+          <div class="lines">${s.lines.map(x => `<a href="/?line=${encodeURIComponent(x.line)}&from=${q.first}&to=${q.last}&dow=${q.dow.join(",")}" title="Ligne ${esc(x.line)} : ${nf(x.veh_h_day, 1)} h / jour${x.peak_hour != null ? ", surtout vers " + x.peak_hour + " h" : ""}">${badge(lineOf(x.line) || (R.lines || []).find(y => y.line === x.line) || {line: x.line})}</a>`).join("")}</div>
+          <div class="bar-in" style="width:${Math.max(2, 100 * s.veh_h_day / max)}%"></div></td>
+        <td class="n">${nf(s.veh_h_day, 1)}</td><td class="n">${nf(s.veh_h_year)}</td><td class="n">${nf(s.s_per_passage, 0)}</td></tr>`).join("")}</tbody></table></div>
+    </div>
+    <p class="method">Méthode : pour chaque ligne, chaque tronçon de 30 m compte les véhicules vus toutes les 20 s, rapportés au nombre de passages. L'excès par rapport au soir (20 h – 23 h, même jours) multiplié par les passages de 6 h à 21 h donne le temps perdu par jour ; les tronçons entre deux arrêts additionnent leurs micro-segments, puis les lignes qui empruntent le même tronçon (même paire d'arrêts, même tracé) s'additionnent. « Réf. de ligne » : le même calcul par rapport au niveau habituel de la ligne entre arrêts, plutôt qu'au soir. Les jours fériés et les jours où le flux est incomplet sont écartés. Par an : × ${R.days_per_year} jours (ordre de grandeur).
+    ${R.computed_at ? `Calculé le ${fdate(R.computed_at.slice(0, 10))}.` : ""}</p>`;
+  if (RMAP) { RMAP.remove(); RMAP = null; }
+  RMAP = L.map("rkmap", {scrollWheelZoom: false});
+  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+    {attribution: "Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors", maxZoom: 16}).addTo(RMAP);
+  RLAYERS = [];
+  const all = [];
+  [...S].reverse().forEach(s => {
+    if (!s.c || s.c.length < 2) return;
+    const ll = s.c.map(([x, y]) => [y, x]);
+    const pl = L.polyline(ll, {color: heat(s.veh_h_day / max), weight: 4 + 6 * s.veh_h_day / max, opacity: .95})
+      .bindTooltip(`<b>${s.rank}. ${esc(s.from)} → ${esc(s.to)}</b><br>${nf(s.veh_h_day, 1)} h-véh. / jour · lignes ${s.lines.map(x => esc(x.line)).join(", ")}`, {sticky: true})
+      .addTo(RMAP);
+    pl.on("click", () => selectRow(s.rank - 1, false));
+    RLAYERS[s.rank - 1] = pl; all.push(pl);
+    if (s.rank <= 15) {
+      const mid = ll[Math.floor(ll.length / 2)];
+      L.marker(mid, {icon: L.divIcon({className: "rkicon", html: String(s.rank)})}).addTo(RMAP).on("click", () => selectRow(s.rank - 1, false));
+    }
+  });
+  if (all.length) RMAP.fitBounds(L.featureGroup(all).getBounds(), {padding: [20, 20]});
+  document.querySelectorAll("#rout tbody tr").forEach(tr => tr.addEventListener("click", e => {
+    if (e.target.closest("a")) return;
+    selectRow(+tr.dataset.i, true);
+  }));
+}
+function selectRow(i, zoom) {
+  document.querySelectorAll("#rout tbody tr").forEach(tr => tr.classList.toggle("sel", +tr.dataset.i === i));
+  const l = RLAYERS[i];
+  if (l) { if (zoom) RMAP.fitBounds(l.getBounds(), {maxZoom: 16, padding: [60, 60]}); l.openTooltip(); }
+  if (!zoom) { const tr = document.querySelector(`#rout tbody tr[data-i="${i}"]`); if (tr) tr.scrollIntoView({block: "nearest", behavior: "smooth"}); }
+}
+
+// ---------------------------------------------------------------- start
+function pendingBanner() {
+  const pm = (INFO && INFO.pending_months) || [];
+  if (!pm.length) { $("pending").hidden = true; return; }
+  $("pending").hidden = false;
+  $("pending").innerHTML = `<b>Préparation des données en cours.</b> ${pm.length === 1 ? "Le mois de " + fmonth(pm[0]) + " n'est" : pm.length + " mois (" + fmonth(pm[0]) + " → " + fmonth(pm[pm.length - 1]) + ") ne sont"} pas encore calculé${pm.length > 1 ? "s" : ""} : ${pm.length > 1 ? "ils apparaîtront" : "il apparaîtra"} au fil du calcul.`;
+}
+async function boot(first) {
+  const path = location.pathname.replace(/\/+$/, "");
+  const tab = path === "/comparer" ? "cmp" : path === "/classement" ? "rank" : "one";
+  setTab(tab);
+  const u = new URLSearchParams(location.search);
+  if (first) {
+    try {
+      const r = await getJSON("/api/lines");
+      LINES = r.body.lines; INFO = {...(r.body.months || {}), ingested: r.body.ingested};
+    } catch (e) { done($("status"), "Impossible de charger les lignes : " + esc(e.message), true); return; }
+    pendingBanner();
+  }
+  if (tab === "rank") {
+    for (const [k, id] of [["from", "rfrom"], ["to", "rto"]]) $(id).value = u.get(k) || "";
+    dowSet($("rdow"), u.get("dow"));
+    const m = u.get("mode") || "all";
+    $("rmode").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.mode === m)));
+    if (u.get("top")) $("rtop").value = u.get("top");
+    $("rterm").checked = u.get("terminus") === "true";
+    for (const id of ["rfrom", "rto"]) { $(id).min = INFO.ingested.from || ""; $(id).max = INFO.ingested.to || ""; }
+    return runRank();
   }
   const withData = LINES.filter(l => l.available);
-  $("line").value = want || (withData.find(l => l.line === "55") || withData[0] || LINES[0] || {}).line;
-  if (!$("to").value) {
-    const l = LINES.find(x => x.line === $("line").value);
-    const last = (l && l.available && l.available.to) || L.ingested.to;
-    $("to").value = last; $("from").value = addDays(last, -27);
-  }
-  if (want) run();
+  const want = u.get("line") && lineOf(u.get("line")) ? u.get("line") : (withData.find(l => l.line === "55") || withData[0] || LINES[0] || {}).line;
+  if (!want) { done($("status"), "Aucune ligne disponible pour l'instant : données en cours de préparation.", true); return; }
+  setLine(want, false);
+  if (u.get("from")) $("from").value = u.get("from");
+  if (u.get("to")) $("to").value = u.get("to");
+  if (u.get("a")) { const [x, y] = u.get("a").split(".."); $("a1").value = x; $("a2").value = y; }
+  if (u.get("b")) { const [x, y] = u.get("b").split(".."); $("b1").value = x; $("b2").value = y; }
+  dowSet($("dow"), u.get("dow"));
+  for (const k of ["seg", "holidays", "ref"]) if (u.get(k)) $(k).value = u.get(k);
+  if (u.get("seg") || u.get("holidays") || u.get("ref")) document.querySelector("#f details").open = true;
+  const l = lineOf(want);
+  if (l && l.available) runLine();
+  else done($("status"), `La ligne ${esc(want)} n'a pas encore de données calculées : choisissez une autre ligne.`, true);
 }
-$("line").addEventListener("change", () => {
-  const l = LINES.find(x => x.line === $("line").value);
-  if (l && l.available && $("to").value > l.available.to) { $("to").value = l.available.to; $("from").value = addDays(l.available.to, -27); }
-});
-$("f").addEventListener("submit", e => { e.preventDefault(); run(); });
-
-async function run() {
-  const p = params();
-  history.replaceState(null, "", "?" + p);
-  $("go").disabled = true;
-  status("Calcul en cours… (la première requête d'une période peut prendre quelques secondes)");
-  const t0 = performance.now();
-  try {
-    const per = new URLSearchParams({line: p.get("line"), from: p.get("from"), to: p.get("to")});
-    const [cov, ver] = await Promise.all([getJSON("/api/coverage?" + per), getJSON("/api/versions?" + per)]);
-    drawCoverage(cov, p); drawVersions(ver);
-    const view = await fetch("/view?" + p, {method: "HEAD"}).then(r => r.ok).catch(() => false);
-    if (view) {
-      $("view").innerHTML = `<iframe src="/view?${p}" title="analyse"></iframe>`;
-      const fr = $("view").querySelector("iframe");
-      fr.onload = () => status(`Ligne ${p.get("line")} · ${((performance.now() - t0) / 1000).toFixed(1)} s`);
-    } else {
-      const D = await getJSON("/api/analysis?" + p);
-      drawFallback(D, p);
-      status(`Ligne ${D.line} · ${D.period.days} jours inclus · ${((performance.now() - t0) / 1000).toFixed(1)} s`);
-    }
-  } catch (e) { status("Erreur : " + e.message, true); $("view").innerHTML = ""; }
-  $("go").disabled = false;
-}
-
-function drawCoverage(cov, p) {
-  const dows = new Set(p.get("dow").split(","));
-  const cal = $("cal"); cal.innerHTML = "";
-  let ok = 0, bad = [];
-  for (const d of cov.days) {
-    const el = document.createElement("div");
-    const sel = dows.has(String(d.dow));
-    let col = "#2e8b57";
-    if (!sel) col = "#999";
-    else if (d.holiday && p.get("holidays") === "exclude") col = "#7d3c98";
-    else if (d.status === "low_coverage") col = "#d68910";
-    else if (d.status !== "ok") col = "#c0392b";
-    if (sel && col === "#2e8b57") ok++;
-    if (sel && col !== "#2e8b57") bad.push(d);
-    el.style.background = col;
-    el.title = `${d.date} ${DOW[d.dow]} · couverture ${d.coverage == null ? "–" : Math.round(d.coverage * 100) + " %"}`
-      + ` · ${d.obs} obs.${d.holiday ? " · " + d.holiday : ""} · ${REASONS[d.status] || d.status}`;
-    cal.appendChild(el);
-  }
-  $("covsum").textContent = `· ${ok} jours utilisables, ${bad.length} écartés` +
-    (bad.length ? " (" + bad.slice(0, 6).map(d => d.date.slice(5) + " " + (d.holiday ? "férié" : REASONS[d.status] || d.status)).join(", ") + (bad.length > 6 ? "…" : "") + ")" : "");
-  $("covcard").hidden = false;
-}
-
-function drawVersions(v) {
-  const rows = v.versions.map(r => `<tr><td>${r.direction_id}</td><td>${r.from} → ${r.to}</td><td>${r.first} … ${r.last}</td>`
-    + `<td>${r.n_days}</td><td>${r.n_stops}</td><td>${r.display ? "affichée" : ""}</td>`
-    + `<td class="muted">${r.links_added.length ? "+" + r.links_added.length + " tronçons" : ""} ${r.links_removed.length ? "−" + r.links_removed.length + " tronçons" : ""}</td></tr>`).join("");
-  $("versions").innerHTML = `<table><tr><th>Sens</th><th>Parcours</th><th>Période</th><th>Jours</th><th>Arrêts</th><th></th><th>Différences</th></tr>${rows}</table>`;
-  $("vercard").hidden = !v.versions.length;
-}
-
-// ------------------------------------------------------------------ fallback view (no package template)
-const METRICS = {
-  obs_h: {label: "observations par heure couverte, par 100 m", f: (o, c, p, len) => c > 0 ? o / c / len * 100 : null},
-  obs_p: {label: "observations par passage", f: (o, c, p) => p > 0 ? o / p : null},
-};
-function colour(t) {   // 0..1 -> light yellow to dark red
-  const stops = [[255,255,204],[254,217,118],[253,141,60],[227,26,28],[128,0,38]];
-  t = Math.max(0, Math.min(1, t)) * (stops.length - 1);
-  const i = Math.min(Math.floor(t), stops.length - 2), u = t - i;
-  return `rgb(${stops[i].map((a, k) => Math.round(a + (stops[i + 1][k] - a) * u)).join(",")})`;
-}
-function matrix(dir, D, dows, metric) {
-  const H = D.hours.length, K = dir.seg.key.length, wk = dir.wk;
-  const M = [];
-  for (let h = 0; h < H; h++) {
-    const row = [];
-    for (let k = 0; k < K; k++) {
-      const l = dir.seg.link[k];
-      let o = 0, c = 0, p = 0;
-      for (const w of dows) { o += wk.obs[w][h][k]; c += wk.cov[w][h][l]; p += wk.p[w][h][l]; }
-      row.push(METRICS[metric].f(o, c, p, dir.seg.len[k]));
-    }
-    M.push(row);
-  }
-  return M;
-}
-function p98(M) {
-  const v = M.flat().filter(x => x != null && isFinite(x)).sort((a, b) => a - b);
-  return v.length ? v[Math.floor(v.length * 0.98)] || v[v.length - 1] : 1;
-}
-let MAP = null;
-function drawFallback(D, p) {
-  const dows = p.get("dow").split(",").map(Number);
-  const metric = "obs_h";
-  const ex = D.period.excluded.map(e => `${e.date} (${REASONS[e.reason] || e.reason})`).join(", ");
-  let html = `<div class="card"><h2>Ligne ${D.line} · ${D.mode || ""} · ${D.period.first} → ${D.period.last}</h2>
-    <div>${D.period.days} jours inclus (${D.period.per_dow.map((n, i) => n ? DOW[i] + " " + n : "").filter(Boolean).join(", ")}).
-    ${ex ? "Jours écartés : " + ex + "." : "Aucun jour écarté."}</div>
-    <div class="muted">Segments de ${D.params.segment_m} m · référence ${D.params.reference_hours.join("-")} h ·
-    <a href="/api/analysis.csv?${p}">CSV</a> · <a href="/api/analysis.parquet?${p}">Parquet</a> ·
-    <a href="/api/hotspots.csv?${p}">points noirs CSV</a> · <a href="/api/analysis?${p}">JSON</a></div></div>
-    <div class="card"><h2>Carte · ${METRICS[metric].label}, heures 7-19</h2><div id="map"></div></div>`;
-  D.dirs.forEach((d, i) => {
-    html += `<div class="card"><h2>Sens ${d.dir} : ${d.from} → ${d.to} <span class="muted">· ${METRICS[metric].label}</span></h2>
-      <div class="heat"><canvas id="hm${i}"></canvas></div></div>`;
-  });
-  const hs = (D.hotspots || []).slice(0, 15).map(h => `<tr><td>${h.dir}</td><td>${h.rank}</td><td>${h.from_stop_name} → ${h.to_stop_name}</td>
-    <td>${h.zone === "stop" ? "arrêt" : "roulage"}</td><td>${h.kind}</td><td>${(h.hours || []).join(", ")}</td>
-    <td>${(+h.excess_per_passage).toFixed(2)} [${(+h.ci_lo).toFixed(2)}; ${(+h.ci_hi).toFixed(2)}]</td><td>${Math.round(h.persistence * 100)} %</td></tr>`).join("");
-  html += `<div class="card"><h2>Points noirs</h2>${hs ? `<table><tr><th>Sens</th><th>#</th><th>Tronçon</th><th>Zone</th><th>Type</th><th>Heures</th>
-    <th>Excès obs./passage [IC]</th><th>Persistance</th></tr>${hs}</table>` : "Aucun point noir significatif."}</div>`;
-  $("view").innerHTML = html;
-
-  const all = [];
-  D.dirs.forEach((d, i) => {
-    const M = matrix(d, D, dows, metric), mx = p98(M);
-    const cv = $("hm" + i), K = d.seg.key.length, H = D.hours.length;
-    const cw = Math.max(2, Math.floor((cv.parentElement.clientWidth - 40) / K)), ch = 14;
-    cv.width = 40 + K * cw; cv.height = H * ch + 4;
-    const g = cv.getContext("2d");
-    g.font = "10px system-ui"; g.fillStyle = getComputedStyle(document.body).color;
-    D.hours.forEach((h, r) => {
-      g.fillText(h + " h", 2, r * ch + 11);
-      for (let k = 0; k < K; k++) {
-        const v = M[r][k];
-        g.fillStyle = v == null ? "#ddd" : colour(v / mx);
-        g.fillRect(40 + k * cw, r * ch, cw, ch - 1);
-      }
-      g.fillStyle = getComputedStyle(document.body).color;
-    });
-    // day band for the map
-    const band = D.hours.map((h, r) => h >= 7 && h < 19 ? r : -1).filter(r => r >= 0);
-    const dm = matrix(d, D, dows, metric);
-    d.seg.c.forEach((c, k) => {
-      const vs = band.map(r => dm[r][k]).filter(v => v != null);
-      all.push({c, v: vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null, mx, dir: d.dir,
-                name: `${d.links[d.seg.link[k]].from} → ${d.links[d.seg.link[k]].to}`});
-    });
-  });
-  if (MAP) { MAP.remove(); MAP = null; }
-  MAP = L.map("map");
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
-    attribution: "© OpenStreetMap, © CARTO", maxZoom: 19}).addTo(MAP);
-  const layers = [];
-  for (const s of all) {
-    if (!s.c || s.c.length < 2) continue;
-    const ll = s.c.map(([x, y]) => [y, x]);
-    layers.push(L.polyline(ll, {color: s.v == null ? "#aaa" : colour(s.v / s.mx), weight: s.dir ? 4 : 7, opacity: .9})
-      .bindTooltip(`${s.name}<br>${s.v == null ? "–" : s.v.toFixed(2)}`));
-  }
-  const grp = L.featureGroup(layers).addTo(MAP);
-  if (layers.length) MAP.fitBounds(grp.getBounds(), {padding: [10, 10]});
-}
-init().catch(e => status("Erreur : " + e.message, true));
+boot(true);
 </script>
 </body>
 </html>

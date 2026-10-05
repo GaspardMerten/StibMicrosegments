@@ -15,7 +15,10 @@ export MOBILITYTWIN_TOKEN=...                           # or put it in a .env fi
 ```
 
 A date that already has `raw/_SUCCESS/date=D.json` is skipped (`--force` rewrites it).
-`--date yesterday` is the nightly run. `--shard-from-env` splits the dates across Cloud Run job tasks.
+`--date yesterday` is the nightly run (then the month is re-derived and the network ranking refreshed).
+Each bulk file is checked against a few JSON snapshots and replaced by them when incomplete; days
+where STIB itself published only part of the network are flagged `partial_source` in `_SUCCESS`
+(see `src/stibms/vd.py`). `--shard-from-env` splits the dates across Cloud Run job tasks.
 
 Layout per service date D (04:00 → 03:00 Europe/Brussels), all lines:
 
@@ -50,23 +53,33 @@ uv pip install -e ../microsegments fastapi uvicorn
 MS_BUCKET=data/ms .venv/bin/uvicorn stibms.api:app --port 8080     # or MS_BUCKET=gs://...
 ```
 
-`/` is the page (line, period, weekdays, segment length; the analysis itself is the package's
-`html/template.html`, fed by `/api/analysis`). Endpoints are listed in `src/stibms/api.py`:
-`/api/health`, `/api/lines`, `/api/coverage`, `/api/versions`, `/api/analysis[.csv|.parquet]`,
-`/api/hotspots[.csv|.parquet]`, `/api/tune`. Results are cached in process and under
-`results/v{ALGO}/` in the bucket.
+Three pages share `static/index.html`: `/` (one line), `/comparer` (two periods) and `/classement`
+(network ranking); the URL query string carries the state. The analysis itself is the package's
+`html/template.html`, fed by `/api/analysis` or `/api/compare`. Endpoints are listed in
+`src/stibms/api.py`: `/api/health`, `/api/status`, `/api/lines`, `/api/coverage`, `/api/versions`,
+`/api/analysis[.csv|.parquet]`, `/api/hotspots[.csv|.parquet]`, `/api/tune`, `/api/compare`,
+`/api/ranking`. Results are cached in process and under `results/v{ALGO}/` in the bucket.
+
+The ranking (`src/stibms/ranking.py`) sums, per stretch (`link_key`, shared by the lines on the same
+stop pair and track), the vehicle time lost per day over the evening. The nightly ingest precomputes
+the default window (last three complete months, weekdays); a custom window is computed a few lines
+per request (`/api/ranking` answers 202 with progress until done; the page polls).
+
+```bash
+.venv/bin/python -m stibms.ranking --default                                  # what the nightly does
+.venv/bin/python -m stibms.ranking --from 2026-07-01 --to 2026-09-30 --mode tram
+```
 
 ## Image
 
-The image needs the `microsegments` package. Until it is on GitHub / PyPI, build against the local
-working copy (staged without `.git` / `.venv`, passed as a named build context):
+The image installs `microsegments>=0.2.0,<0.3` from PyPI. To build against a local working copy
+instead (staged without `.git` / `.venv`, passed as a named build context):
 
 ```bash
 scripts/docker-build.sh ../microsegments stibms:local
 docker run --rm -p 8080:8080 -e MS_BUCKET=/data -v $PWD/data/ms:/data stibms:local
 ```
 
-Without the named context, the Dockerfile installs `git+https://github.com/GaspardMerten/microsegments`.
 
 Tests: `pytest` runs offline (API and derive tests build a small bucket with the package's simulator). `pytest -m network` checks line 55 against the prototype and needs a token.
 

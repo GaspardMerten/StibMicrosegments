@@ -13,7 +13,16 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
                                               JSON contract (microsegments.contract) / result table
     GET /api/hotspots[.csv|.parquet]?...      hotspot stretches (same parameters)
     GET /api/tune?...&lengths=15,20,30,40,50  segment-length criteria (slow, cached)
-    GET /                                     the page
+    GET /api/compare?line&a=D1..D2&b=D3..D4&dow&holidays&seg&...
+                                              period B's contract + the ``compare`` section
+    GET /api/ranking?from&to&dow&holidays&mode=all|tram|bus|metro&top=50
+                                              costliest stretches of the network (vehicle-hours lost
+                                              per day); default window when from/to are omitted.
+                                              Custom windows are computed over several polls:
+                                              {"status": "running", "done", "total"} until done.
+    GET /api/status                           ingested range, derived months, months pending
+    GET /, /comparer, /classement             the page (one line / two periods / network ranking)
+    GET /view?<analysis or compare params>    the package page fed by /api/analysis or /api/compare
 
 Results are cached in process (LRU) and in the bucket (``results/v{ALGO}/<hash>.json.gz``), keyed
 by the parameters, ALGO_VERSION, the package version and the data stamp (last ingested date and
@@ -163,18 +172,11 @@ def query(line: str = Q(...), from_: str = Q(..., alias="from"), to: str = Q(...
 
 
 # ---------------------------------------------------------------------------------- caching
-def _stamp(data, a: dt.date, b: dt.date) -> str:
-    """Changes whenever data of [a, b] changes: last ingested date in range + derive times."""
-    from .data import derived, months_between
-
-    def f():
-        ing = [d for d in data.ingested_dates() if a <= d <= b]
-        parts = [ing[-1].isoformat() if ing else "-"]
-        for m in months_between(a, b):
-            rel = derived(f"_SUCCESS/month={m}.json")
-            parts.append(data.store.read_json(rel).get("written_at", "") if data.store.exists(rel) else "")
-        return "|".join(parts)
-    return data._cached(f"stamp:{a}:{b}", f, ttl=300)
+def _stamp(data, a: dt.date, b: dt.date, a2: dt.date | None = None, b2: dt.date | None = None) -> str:
+    """Changes whenever data of [a, b] (and [a2, b2]) changes: last ingested date + derive times."""
+    from .data import date_range
+    dates = date_range(a, b) + (date_range(a2, b2) if a2 is not None else [])
+    return data._cached(f"stamp:{a}:{b}:{a2}:{b2}", lambda: data.stamp(dates), ttl=120)
 
 
 def _cache_control(data, b: dt.date) -> str:
@@ -194,7 +196,7 @@ def _gz_response(request: Request, gz: bytes, cc: str, media="application/json",
 def _cached_json(kind: str, q, compute, request: Request) -> Response:
     """kind: result family; compute() -> JSON-able. In-process LRU, then bucket, then compute."""
     data = state.data
-    key = f"{kind}-{q.key(_stamp(data, q.first, q.last))}"
+    key = f"{kind}-{q.key(_stamp_of(data, q))}"
     cc = _cache_control(data, q.last)
     gz = state.blobs.get(key)
     src = "memory"
@@ -221,6 +223,12 @@ def _cached_json(kind: str, q, compute, request: Request) -> Response:
                         log.exception("result cache write failed")
                 state.blobs.put(key, gz)
     return _gz_response(request, gz, cc, extra={"X-Cache": src})
+
+
+def _stamp_of(data, q) -> str:
+    if hasattr(q, "a") and hasattr(q, "b"):
+        return _stamp(data, q.a[0], q.a[1], q.b[0], q.b[1])
+    return _stamp(data, q.first, q.last)
 
 
 def _run(q):
@@ -264,6 +272,18 @@ def health():
     return {"ok": True, "version": __version__, "bucket": os.environ.get("MS_BUCKET", "")[:5] + "…"}
 
 
+def _default_period(months: list[str], ing: list[dt.date], n: int = 3) -> dict | None:
+    """Last ``n`` complete months (ingested up to their last day) among ``months``; else the last
+    ``n`` months, cut at the last ingested date."""
+    if not months or not ing:
+        return None
+    full = [m for m in months if _month_last(m) <= ing[-1]]
+    pick = (full or months)[-n:]
+    a = max(dt.date.fromisoformat(pick[0] + "-01"), ing[0])
+    b = min(_month_last(pick[-1]), ing[-1])
+    return {"from": a.isoformat(), "to": b.isoformat()}
+
+
 @app.get("/api/lines")
 def lines(date: str | None = None):
     import polars as pl
@@ -281,16 +301,18 @@ def lines(date: str | None = None):
         row = x.tail(1).row(0, named=True)
         r = data.routes(row["sha"])
         months = data.line_months()
+        done = data.derived_months()      # a month being derived has some line files already
         ing = data.ingested_dates()
         out = []
         for rr in r.iter_rows(named=True):
             ln = str(rr["route_short_name"])
-            ms_ = months.get(ln, [])
+            ms_ = [m for m in months.get(ln, []) if m in done]
             avail = None
             if ms_:
                 a = next((x for x in ing if x.isoformat()[:7] >= ms_[0]), None)
                 b = next((x for x in reversed(ing) if x.isoformat()[:7] <= ms_[-1]), None)
-                avail = {"from": a.isoformat() if a else None, "to": b.isoformat() if b else None, "months": ms_}
+                avail = {"from": a.isoformat() if a else None, "to": b.isoformat() if b else None, "months": ms_,
+                         "default": _default_period(ms_, ing)}
             rt = rr.get("route_type")
             out.append({"line": ln, "name": rr.get("route_long_name"), "route_type": rt,
                         "mode": ROUTE_TYPES.get(int(rt)) if rt is not None else None,
@@ -300,8 +322,8 @@ def lines(date: str | None = None):
                                 (len(o["line"]), o["line"]) if o["line"].isdigit() else (99, o["line"])))
         return {"date": row["service_date"].isoformat(), "gtfs": row["sha"][:12],
                 "ingested": {"from": ing[0].isoformat() if ing else None, "to": ing[-1].isoformat() if ing else None},
-                "lines": out}
-    res = data._cached(f"lines:{date}", f, ttl=600)
+                "months": _months_info(data), "lines": out}
+    res = data._cached(f"lines:{date}", f, ttl=300)
     return JSONResponse(res, headers={"Cache-Control": SHORT_CACHE})
 
 
@@ -400,7 +422,118 @@ def tune(request: Request, q=Depends(query), lengths: str = Q("15,20,30,40,50,75
     return _cached_json("tune", _K, compute, request)
 
 
+def _range(s: str, name: str) -> tuple[dt.date, dt.date]:
+    try:
+        a, b = s.split("..")
+        a, b = dt.date.fromisoformat(a.strip()), dt.date.fromisoformat(b.strip())
+    except ValueError:
+        raise HTTPException(422, f"{name}: expected YYYY-MM-DD..YYYY-MM-DD")
+    return a, b
+
+
+def compare_query(line: str = Q(...), a: str = Q(..., description="period A (before), YYYY-MM-DD..YYYY-MM-DD"),
+                  b: str = Q(..., description="period B (after)"), dow: str = Q("0-4"), holidays: str = Q("exclude"),
+                  seg: float = Q(30.0), phase: float = Q(0.0), grid: str = Q("equal"), stopzone: str = Q("30,60"),
+                  ref: str = Q("20-23")):
+    from .analysis import CompareQuery
+    try:
+        return CompareQuery(line=line.strip(), a=_range(a, "a"), b=_range(b, "b"),
+                            dow=tuple(sorted(set(_ints(dow, "dow")))), holidays=holidays, seg=float(seg),
+                            phase=float(phase), grid=grid,
+                            stopzone=tuple(float(x) for x in _pair(stopzone, "stopzone", sep=",")),
+                            ref=tuple(int(x) for x in _pair(ref, "ref", int)))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/compare")
+def compare(request: Request, cq=Depends(compare_query)):
+    from . import analysis as A
+
+    def compute():
+        try:
+            return A.run_compare(state.data, cq)
+        except A.NotFound as e:
+            raise HTTPException(404, str(e))
+    return _cached_json("compare", cq, compute, request)
+
+
+def _months_info(data) -> dict:
+    ing = data.ingested_dates()
+    have = data.derived_months()
+    from .data import month_key
+    ing_months = sorted({month_key(d) for d in ing})
+    complete = [m for m in have if ing and dt.date.fromisoformat(m + "-01") <= ing[-1]
+                and _month_last(m) <= ing[-1]]
+    return {"ingested": {"from": ing[0].isoformat() if ing else None, "to": ing[-1].isoformat() if ing else None,
+                         "days": len(ing)},
+            "derived_months": list(have), "pending_months": [m for m in ing_months if m not in have],
+            "complete_months": complete}
+
+
+def _month_last(m: str) -> dt.date:
+    from .data import month_dates
+    return month_dates(m)[-1]
+
+
+@app.get("/api/status")
+def status():
+    data = state.data
+    res = data._cached("status", lambda: _months_info(data), ttl=120)
+    try:
+        res = {**res, "ranking_default": data.store.read_json(f"results/v{_algo()}/ranking-default.json")}
+    except FileNotFoundError:
+        res = {**res, "ranking_default": None}
+    return JSONResponse(res, headers={"Cache-Control": "public, max-age=60"})
+
+
+def _algo() -> int:
+    from .data import ALGO_VERSION
+    return ALGO_VERSION
+
+
+_ranking_lock = threading.Lock()
+
+
+@app.get("/api/ranking")
+def ranking(request: Request, from_: str | None = Q(None, alias="from"), to: str | None = None,
+            dow: str = Q("0-4"), holidays: str = Q("exclude"), mode: str = Q("all"), top: int = Q(50),
+            terminus: bool = Q(False)):
+    from . import ranking as R
+    data = state.data
+    top = max(5, min(int(top), 200))
+    a, b = _date(from_, "from"), _date(to, "to")
+    if a is None or b is None:
+        w = R.default_window(data)
+        if w is None:
+            raise HTTPException(404, "aucun mois complet calculé pour l'instant : données en cours de préparation")
+        a, b = a or w[0], b or w[1]
+    try:
+        rq = R.RankQuery(a, b, tuple(sorted(set(_ints(dow, "dow")))), holidays, mode, terminus)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    key = "ranking-" + rq.key(_stamp(data, a, b)) + f"-{mode}-{int(terminus)}-{top}"
+    gz = state.blobs.get(key)
+    if gz is None:
+        # One computing request per instance; others report progress from the bucket. Each call
+        # computes for at most ~25 s (Cloud Run gives CPU only during requests), the page re-polls.
+        if not _ranking_lock.acquire(timeout=1):
+            return JSONResponse({"status": "running", "busy": True, "query": rq.canonical()}, status_code=202,
+                                headers={"Cache-Control": "no-store"})
+        try:
+            res = R.compute(data, rq, top=top, budget_s=float(os.environ.get("MS_RANK_BUDGET", "25")))
+        finally:
+            _ranking_lock.release()
+        if res.get("status") != "done":
+            return JSONResponse(res, status_code=202, headers={"Cache-Control": "no-store"})
+        gz = gzip.compress(json.dumps(res, separators=(",", ":"), default=str).encode(), 6)
+        state.blobs.put(key, gz)
+    return _gz_response(request, gz, _cache_control(data, b))
+
+
 @app.get("/", include_in_schema=False)
+@app.get("/comparer", include_in_schema=False)
+@app.get("/classement", include_in_schema=False)
 def index():
     return FileResponse(STATIC / "index.html", headers={"Cache-Control": SHORT_CACHE})
 
@@ -408,7 +541,9 @@ def index():
 _LOADER = """<script>
 (function () {
   var main = document.getElementById("ms-main");
-  fetch("/api/analysis" + location.search).then(function (r) {
+  var q = new URLSearchParams(location.search);
+  var api = (q.get("a") && q.get("b")) ? "/api/compare" : "/api/analysis";
+  fetch(api + location.search).then(function (r) {
     if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || r.statusText); });
     return r.text();
   }).then(function (txt) {
@@ -416,8 +551,10 @@ _LOADER = """<script>
     var s = document.createElement("script");
     s.textContent = main.textContent;
     document.body.appendChild(s);
+    try { parent.postMessage({ms: "ready"}, "*"); } catch (x) {}
   }).catch(function (e) {
-    document.body.insertAdjacentHTML("afterbegin", '<p style="color:#ff8a80;font:14px system-ui;padding:12px">Erreur : ' + e.message + "</p>");
+    document.body.innerHTML = '<p style="color:#c0392b;font:15px system-ui;padding:16px">' + e.message.replace(/</g, "&lt;") + "</p>";
+    try { parent.postMessage({ms: "error", message: e.message}, "*"); } catch (x) {}
   });
 })();
 </script>"""

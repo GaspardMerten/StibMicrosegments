@@ -163,3 +163,58 @@ def test_line_absent_hours():
     ab = line_absent(placed, days)
     assert ab["service_date"].unique().to_list() == [days[2]]
     assert sorted(ab["hour"].to_list()) == list(range(6, 12))
+
+
+def test_compare(client):
+    r = client.get("/api/compare?line=S1&a=2025-05-26..2025-05-29&b=2025-05-30..2025-06-02&dow=0-6&seg=50")
+    assert r.status_code == 200, r.text
+    c = r.json()
+    assert c["compare"]["a"]["first"] >= "2025-05-26" and c["compare"]["b"]["last"] <= "2025-06-02"
+    d0 = c["compare"]["dirs"][0]
+    assert len(d0["d"]) == len(c["compare"]["cols"]) and len(d0["d"][0]) == len(d0["seg_key"])
+    assert c["query"]["a"] == ["2025-05-26", "2025-05-29"]
+    assert client.get("/api/compare?line=S1&a=2025-05-26..2025-05-29&b=2025-05-30..2025-06-02&dow=0-6&seg=50").headers["x-cache"] == "memory"
+    assert client.get("/api/compare?line=S1&a=2025-05-29..2025-05-26&b=2025-05-30..2025-06-02").status_code == 422
+    assert client.get("/api/compare?line=S1&a=2024-01-01..2024-01-05&b=2025-05-30..2025-06-02").status_code == 404
+
+
+def test_ranking(client, monkeypatch):
+    monkeypatch.setenv("MS_RANK_BUDGET", "0")      # one line per poll: exercise the progress path
+    q = "/api/ranking?from=2025-05-26&to=2025-06-02&dow=0-6&top=10"
+    r = client.get(q)
+    for _ in range(5):
+        if r.status_code == 200:
+            break
+        assert r.status_code == 202 and r.json()["status"] == "running"
+        r = client.get(q)
+    assert r.status_code == 200, r.text
+    res = r.json()
+    assert res["status"] == "done" and res["lines_used"] == 1
+    s = res["stretches"]
+    assert 0 < len(s) <= 10 and s[0]["rank"] == 1
+    assert s[0]["veh_h_day"] >= s[-1]["veh_h_day"]
+    assert s[0]["lines"][0]["line"] == "S1" and s[0]["c"]
+    assert client.get(q.replace("top=10", "top=10&mode=metro")).json()["lines_used"] == 0
+
+
+def test_status_lines_default_and_not_derived(client, derived_root):
+    st = client.get("/api/status").json()
+    assert st["derived_months"] == ["2025-05", "2025-06"] and st["pending_months"] == []
+    s1 = next(x for x in client.get("/api/lines").json()["lines"] if x["line"] == "S1")
+    assert s1["available"]["default"] == {"from": "2025-05-26", "to": "2025-05-31"}   # complete months only
+    from stibms import api
+    p = derived_root / derived("_SUCCESS/month=2025-06.json")
+    keep = p.read_bytes()
+    p.unlink()
+    try:
+        api.state.reset()
+        days = {d["date"]: d["status"] for d in client.get(f"/api/coverage?{Q}").json()["days"]}
+        assert days["2025-06-01"] == "not_derived" and days["2025-05-26"] == "ok"
+    finally:
+        p.write_bytes(keep)
+        api.state.reset()
+
+
+def test_page_paths(client):
+    for path in ("/", "/comparer", "/classement"):
+        assert client.get(path).status_code == 200

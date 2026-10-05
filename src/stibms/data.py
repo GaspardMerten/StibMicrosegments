@@ -61,6 +61,11 @@ def date_range(a: dt.date, b: dt.date) -> list[dt.date]:
     return [a + dt.timedelta(days=i) for i in range((b - a).days + 1)]
 
 
+def months_of(dates) -> list[str]:
+    """Distinct months of ``dates`` (two periods far apart read only their own months)."""
+    return sorted({month_key(d) for d in dates})
+
+
 class Data:
     """Bucket access with small in-process caches (index, ingested dates, per-sha networks)."""
 
@@ -287,7 +292,7 @@ class Data:
         ds = sorted(set(dates))
         if not ds:
             return pl.DataFrame()
-        frames = [f for f in self.read_many([derived(f"coverage/month={m}.parquet") for m in months_between(ds[0], ds[-1])])
+        frames = [f for f in self.read_many([derived(f"coverage/month={m}.parquet") for m in months_of(ds)])
                   if f is not None]
         if not frames:
             return pl.DataFrame()
@@ -297,7 +302,7 @@ class Data:
         ds = sorted(set(dates))
         if not ds:
             return None
-        rels = [derived(f"{kind}/line={line}/month={m}.parquet") for m in months_between(ds[0], ds[-1])]
+        rels = [derived(f"{kind}/line={line}/month={m}.parquet") for m in months_of(ds)]
         frames = [f.filter(pl.col("service_date").is_in(ds)) for f in self.read_many(rels) if f is not None]
         return pl.concat(frames, how="diagonal_relaxed") if frames else None
 
@@ -306,6 +311,35 @@ class Data:
 
     def passages(self, line: str, dates) -> pl.DataFrame | None:
         return self._line_months("passages", line, dates)
+
+    def derived_months(self) -> dict[str, str]:
+        """month -> derive time (``written_at`` is read lazily by ``month_stamp``) for every month with
+        a derive report."""
+        def f():
+            out = {}
+            for p in self.store.glob(derived("_SUCCESS/month=*.json")):
+                out[p.rsplit("month=", 1)[1][:7]] = p
+            return dict(sorted(out.items()))
+        return self._cached("derived_months", f, ttl=120)
+
+    def month_stamp(self, month: str) -> str:
+        """Derive time of a month ('' when not derived), cached briefly."""
+        def f():
+            rel = derived(f"_SUCCESS/month={month}.json")
+            try:
+                return self.store.read_json(rel).get("written_at", "")
+            except FileNotFoundError:
+                return ""
+        return self._cached(f"mstamp:{month}", f, ttl=120)
+
+    def stamp(self, dates) -> str:
+        """Changes whenever the data of ``dates`` changes: last ingested date among them + derive
+        times of their months (result cache keys)."""
+        ds = sorted(set(dates))
+        if not ds:
+            return "-"
+        ing = [d for d in self.ingested_dates() if ds[0] <= d <= ds[-1]]
+        return "|".join([ing[-1].isoformat() if ing else "-"] + [self.month_stamp(m) for m in months_of(ds)])
 
     def line_months(self) -> dict[str, list[str]]:
         """line -> months with a placed file."""
