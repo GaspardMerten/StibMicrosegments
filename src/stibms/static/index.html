@@ -60,6 +60,9 @@ input[type=number] { width:80px; }
 .rk-ex { color:var(--ink-2); font-size:14px; margin:18px 0 0; }
 .rk-ex ul { margin:6px 0 0; padding-left:20px; }
 .rk-ex li { margin:3px 0; }
+.rk-ex summary { display:block; list-style:none; cursor:default; }
+.rk-ex summary::-webkit-details-marker { display:none; }
+.ph-hint, .tbl .u, .tbl .str small.ph-x { display:none; }
 .rkopts { display:flex; gap:8px 18px; flex-wrap:wrap; flex-basis:100%; }
 details.more { flex-basis:100%; border-top:1px solid var(--line); padding-top:10px; }
 details.more summary { cursor:pointer; color:var(--ink-2); font-size:14px; }
@@ -137,6 +140,32 @@ details.more .opts { display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:10p
 .tbl .lines a { text-decoration:none; }
 .tbl .lines .lb { min-width:26px; height:22px; font-size:12px; }
 .bar-in { height:4px; background:var(--acc); border-radius:2px; margin-top:4px; opacity:.85; }
+@media (max-width:600px) {
+  /* phone: one compact row per stretch (rank, name + line badges, h/day); details on tap */
+  #rkmap { height:260px; }
+  .tile { padding:10px 12px; } .tile b { font-size:20px; } .tile span { font-size:12px; line-height:1.35; display:block; }
+  .ph-hint { display:block; color:var(--ink-3); font-size:12px; margin:4px 0 2px; }
+  #rout .tbl thead { display:none; }
+  #rout .tbl, #rout .tbl tbody { display:block; }
+  #rout .tbl tr { display:grid; grid-template-columns:22px minmax(0, 1fr) auto; column-gap:8px; align-items:start; padding:6px 4px; border-bottom:1px solid var(--line); }
+  #rout .tbl td { display:block; padding:0; border:0; background:none; }
+  #rout .tbl tr.sel, #rout .tbl tr:hover { background:var(--surface); }
+  #rout .tbl td.n:not(.hd) { display:none; }
+  #rout .tbl .rk { font-size:12px; padding-top:2px; }
+  #rout .tbl .str b { font-size:14px; line-height:1.35; margin-right:4px; }
+  #rout .tbl .lines { display:inline-flex; vertical-align:1px; margin:0; gap:3px; }
+  #rout .tbl .lines .lb { min-width:22px; height:18px; font-size:11px; }
+  #rout .tbl .str small, #rout .tbl .str .tag { display:none; }
+  #rout .tbl tr.open .str small { display:block; margin-top:3px; }
+  #rout .tbl tr.open .str .tag { display:inline-block; }
+  #rout .tbl .bar-in { height:3px; margin-top:3px; }
+  #rout .tbl td.hd { font:700 16px/1.2 var(--serif); color:var(--ink); }
+  #rout .tbl .u { display:inline; font:500 11px var(--sans); color:var(--ink-3); }
+  .rk-ex summary { cursor:pointer; }
+  .rk-ex summary::before { content:"▸ "; color:var(--ink-3); }
+  .rk-ex[open] summary::before { content:"▾ "; }
+  .rk-ex:not([open]) .ex-why { display:none; }
+}
 .progress { height:6px; background:var(--line); border-radius:3px; overflow:hidden; width:min(420px, 100%); }
 .progress div { height:100%; background:var(--acc); transition:width .4s; }
 .rkicon { background:var(--acc); color:#111; font:700 11px/18px var(--sans); text-align:center; border-radius:50%; width:20px !important; height:20px !important; margin:-10px 0 0 -10px !important; border:1px solid #111; }
@@ -205,7 +234,7 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
   <!-- ============================================================ ranking -->
   <section id="rankview" hidden>
     <div class="bar">
-      <p class="lede" id="rlede">Temps perdu entre les arrêts : les tronçons du réseau où les véhicules STIB perdent le plus de temps par rapport au soir (20 h – 23 h, circulation fluide), de 6 h à 21 h, toutes lignes confondues. Les lignes qui partagent un tronçon s'additionnent.</p>
+      <p class="lede" id="rlede">Temps perdu entre les arrêts : les tronçons du réseau où les véhicules STIB perdent le plus de temps par rapport au soir (20 h – 23 h, circulation fluide), de 6 h à 21 h, toutes lignes confondues. Les lignes qui partagent un tronçon s'additionnent. Le temps passé aux arrêts n'est pas compté, ni les terminus et les arrêts où les véhicules attendent pour respecter l'horaire.</p>
       <form id="rf" autocomplete="off">
         <div class="fld"><span>Période</span>
           <div class="dates"><input type="date" id="rfrom" aria-label="Du"><em>→</em><input type="date" id="rto" aria-label="Au"></div></div>
@@ -213,8 +242,7 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
         <label class="fld"><span>Tronçons</span><select id="rtop"><option>20</option><option selected>50</option><option>100</option></select></label>
         <button class="go" id="rgo" type="submit">Classer</button>
         <div class="rkopts">
-          <label class="check"><input type="checkbox" id="rstops"> Inclure les arrêts (de 30 m avant à 60 m après chaque arrêt)</label>
-          <label class="check"><input type="checkbox" id="rterm"> Inclure les terminus et points de régulation</label>
+          <label class="check"><input type="checkbox" id="rterm"> Inclure les terminus et les arrêts où les véhicules attendent pour respecter l'horaire</label>
         </div>
         <details class="more">
           <summary>Options : jours</summary>
@@ -540,7 +568,6 @@ function rankParams() {
   p.set("dow", dowGet($("rdow")));
   p.set("mode", rmode()); p.set("top", $("rtop").value);
   if ($("rterm").checked) p.set("terminus", "true");
-  if ($("rstops").checked) p.set("stops", "true");
   return p;
 }
 let RMAP = null, RLAYERS = [], RK = 0;
@@ -572,7 +599,6 @@ async function runRank() {
 }
 $("rf").addEventListener("submit", e => { e.preventDefault(); runRank(); });
 $("rterm").addEventListener("change", runRank);
-$("rstops").addEventListener("change", runRank);
 $("rtop").addEventListener("change", runRank);
 
 function heat(t) {
@@ -581,16 +607,17 @@ function heat(t) {
   const i = Math.min(Math.floor(t), s.length - 2), u = t - i;
   return `rgb(${s[i].map((a, k) => Math.round(a + (s[i + 1][k] - a) * u)).join(",")})`;
 }
-const RREASON = {terminus: "terminus", short_terminus: "terminus partiel", holding: "point de régulation"};
-const RREASON_LONG = {terminus: "terminus de la ligne (temps de battement)", short_terminus: "terminus partiel : des véhicules y stationnent plus de 3 min",
-  holding: "point de régulation : des véhicules y attendent plus de 3 min"};
+const RREASON = {terminus: "terminus", short_terminus: "terminus partiel", holding: "attente pour l'horaire"};
+const RREASON_LONG = {terminus: "terminus de la ligne (pause entre deux courses)", short_terminus: "terminus partiel : des véhicules y stationnent plus de 3 min",
+  holding: "arrêt où des véhicules attendent plus de 3 min pour respecter l'horaire"};
+const PHONE = matchMedia("(max-width:600px)");
 const PEAK = {am: "surtout le matin", pm: "surtout l'après-midi", day: "toute la journée"};
 function drawRank(R) {
-  const q = R.query, S = R.stretches || [], stopsIn = !!q.stops;
+  const q = R.query, S = R.stretches || [], termIn = !!q.terminus;
   if (!$("rfrom").value) $("rfrom").value = q.first;
   if (!$("rto").value) $("rto").value = q.last;
-  $("rlede").textContent = (stopsIn ? "Temps perdu entre les arrêts et aux arrêts" : "Temps perdu entre les arrêts")
-    + " : les tronçons du réseau où les véhicules STIB perdent le plus de temps par rapport au soir (20 h – 23 h, circulation fluide), de 6 h à 21 h, toutes lignes confondues. Les lignes qui partagent un tronçon s'additionnent.";
+  $("rlede").textContent = "Temps perdu entre les arrêts : les tronçons du réseau où les véhicules STIB perdent le plus de temps par rapport au soir (20 h – 23 h, circulation fluide), de 6 h à 21 h, toutes lignes confondues. Les lignes qui partagent un tronçon s'additionnent. Le temps passé aux arrêts n'est pas compté"
+    + (termIn ? "." : ", ni les terminus et les arrêts où les véhicules attendent pour respecter l'horaire.");
   const daysTxt = q.dow.length === 5 && q.dow.join() === "0,1,2,3,4" ? "jours ouvrables" : "jours " + q.dow.map(d => DOW[d]).join(", ");
   const modeTxt = {all: "toutes les lignes", tram: "les trams", bus: "les bus", metro: "le métro"}[q.mode];
   if (!S.length) {
@@ -603,7 +630,7 @@ function drawRank(R) {
   const ex = R.excluded || {n: 0, top: []};
   $("rout").innerHTML = `
     <p class="rk-sum">Du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b>, ${daysTxt}, ${modeTxt} (${R.lines_used} lignes) :
-      les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> ${stopsIn ? "" : "entre les arrêts "}par rapport au soir,
+      les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> entre les arrêts par rapport au soir,
       soit environ <b>${nf(top * R.days_per_year / 1000, 1)} milliers d'heures par an</b>.</p>
     <div class="tiles">
       <div class="tile"><b>${nf(S[0].veh_h_day, 1)} h</b><span>par jour sur le tronçon n° 1, ${esc(S[0].from)} → ${esc(S[0].to)}</span></div>
@@ -613,19 +640,20 @@ function drawRank(R) {
     </div>
     <div class="rkgrid">
       <div class="mapcol"><div id="rkmap"></div></div>
-      <div><table class="tbl"><thead><tr><th>#</th><th>Tronçon et lignes</th><th style="text-align:right">h-véh. / jour</th><th style="text-align:right">par an</th><th style="text-align:right" title="secondes perdues par passage, par rapport au soir">s / passage</th></tr></thead>
+      <div><p class="ph-hint">Touchez un tronçon pour le voir sur la carte et lire le détail.</p><table class="tbl"><thead><tr><th>#</th><th>Tronçon et lignes</th><th style="text-align:right">h-véh. / jour</th><th style="text-align:right">par an</th><th style="text-align:right" title="secondes perdues par passage, par rapport au soir">s / passage</th></tr></thead>
       <tbody>${S.map((s, i) => `<tr data-i="${i}">
         <td class="rk">${s.rank}</td>
         <td class="str"><b>${esc(s.from)} → ${esc(s.to)}</b>
-          <small>${nf(s.len_m)} m · ${nf(s.passages_day)} passages / jour · entre les arrêts ${nf(s.veh_h_day_run, 1)} h, aux arrêts ${nf(s.veh_h_day_stop, 1)} h${stopsIn ? "" : " (non compté)"}</small>
+          <small>${nf(s.len_m)} m · ${nf(s.passages_day)} passages / jour</small>
+          <small class="ph-x">${nf(s.veh_h_year)} h-véh. par an · ${nf(s.s_per_passage, 0)} s perdues par passage</small>
           <div class="lines">${s.lines.map(x => `<a href="/?line=${encodeURIComponent(x.line)}&from=${q.first}&to=${q.last}&dow=${q.dow.join(",")}" title="Ligne ${esc(x.line)} : ${nf(x.veh_h_day, 1)} h / jour, ${PEAK[x.peak] || ""}${x.reason ? " · " + RREASON_LONG[x.reason] : ""}">${lb(x)}</a>`).join("")}</div>
           ${(s.reasons || []).map(r => `<span class="tag" title="${esc(RREASON_LONG[r] || r)}">${esc(RREASON[r] || r)}</span>`).join("")}
           <div class="bar-in" style="width:${Math.max(2, 100 * s.veh_h_day / max)}%"></div></td>
-        <td class="n">${nf(s.veh_h_day, 1)}</td><td class="n">${nf(s.veh_h_year)}</td><td class="n">${nf(s.s_per_passage, 0)}</td></tr>`).join("")}</tbody></table></div>
+        <td class="n hd">${nf(s.veh_h_day, 1)}<span class="u"> h/j</span></td><td class="n">${nf(s.veh_h_year)}</td><td class="n">${nf(s.s_per_passage, 0)}</td></tr>`).join("")}</tbody></table></div>
     </div>
-    ${ex.n ? `<div class="rk-ex"><b>${nf(ex.n)} tronçon${ex.n > 1 ? "s" : ""} laissé${ex.n > 1 ? "s" : ""} de côté</b> (${nf(ex.veh_h_day, 0)} h-véh. / jour) : terminus et points de régulation, où les véhicules attendent volontairement (battement, régulation de l'horaire) et non à cause de la circulation. Cochez « Inclure les terminus et points de régulation » pour les voir dans le classement. Les principaux :
-      <ul>${ex.top.map(x => `<li>${esc(x.from)} → ${esc(x.to)} (${x.lines.map(y => esc(y.line)).join(", ")}) : ${nf(x.veh_h_day, 1)} h / jour, ${nf(x.s_per_passage, 0)} s par passage · ${x.reasons.map(r => esc(RREASON_LONG[r] || r)).join(" ; ")}</li>`).join("")}</ul></div>` : ""}
-    <p class="method">Toutes les 20 secondes, la STIB publie la position de chaque véhicule. Chaque ligne est découpée en tronçons de 30 m ; on compte combien de fois un véhicule y est vu (1 observation ≈ 20 s passées là), par passage. Le temps en plus par rapport au soir (20 h – 23 h, mêmes jours), multiplié par les passages de 6 h à 21 h, donne le temps perdu par jour. ${stopsIn ? "Les zones d'arrêt (30 m avant à 60 m après chaque arrêt) sont comptées." : "Les zones d'arrêt (30 m avant à 60 m après chaque arrêt) ne sont pas comptées : on y attend aussi des voyageurs."} Les jours fériés et les jours où le flux est incomplet sont écartés. Par an : × ${R.days_per_year} jours (ordre de grandeur).</p>`;
+    ${ex.n ? `<details class="rk-ex"${PHONE.matches ? "" : " open"}><summary><b>${nf(ex.n)} tronçon${ex.n > 1 ? "s" : ""} laissé${ex.n > 1 ? "s" : ""} de côté</b> (${nf(ex.veh_h_day, 0)} h-véh. / jour)<span class="ex-why"> : terminus, ou arrêts où les véhicules attendent volontairement pour respecter l'horaire, pas un ralentissement dû à la circulation. Cochez « Inclure les terminus et les arrêts où les véhicules attendent pour respecter l'horaire » pour les voir dans le classement. Les principaux :</span></summary>
+      <ul>${ex.top.map(x => `<li>${esc(x.from)} → ${esc(x.to)} (${x.lines.map(y => esc(y.line)).join(", ")}) : ${nf(x.veh_h_day, 1)} h / jour, ${nf(x.s_per_passage, 0)} s par passage · ${x.reasons.map(r => esc(RREASON_LONG[r] || r)).join(" ; ")}</li>`).join("")}</ul></details>` : ""}
+    <p class="method">Toutes les 20 secondes, la STIB publie la position de chaque véhicule. Chaque ligne est découpée en tronçons de 30 m ; on compte combien de fois un véhicule y est vu (1 observation ≈ 20 s passées là), par passage. Le temps en plus par rapport au soir (20 h – 23 h, mêmes jours), multiplié par les passages de 6 h à 21 h, donne le temps perdu par jour. Les zones d'arrêt (30 m avant à 60 m après chaque arrêt) ne sont pas comptées : on y attend aussi des voyageurs. Les jours fériés et les jours où le flux est incomplet sont écartés. Par an : × ${R.days_per_year} jours (ordre de grandeur).</p>`;
   if (RMAP) { RMAP.remove(); RMAP = null; }
   RMAP = L.map("rkmap", {scrollWheelZoom: false});
   L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
@@ -637,7 +665,7 @@ function drawRank(R) {
     if (!geos.length) return;
     const lls = geos.map(c => c.map(([x, y]) => [y, x]));
     const pl = L.polyline(lls, {color: heat(s.veh_h_day / max), weight: 4 + 6 * s.veh_h_day / max, opacity: .95})
-      .bindTooltip(`<b>${s.rank}. ${esc(s.from)} → ${esc(s.to)}</b><br>${nf(s.veh_h_day, 1)} h-véh. / jour · lignes ${s.lines.map(x => esc(x.line)).join(", ")}<br>entre les arrêts ${nf(s.veh_h_day_run, 1)} h · aux arrêts ${nf(s.veh_h_day_stop, 1)} h`, {sticky: true})
+      .bindTooltip(`<b>${s.rank}. ${esc(s.from)} → ${esc(s.to)}</b><br>${nf(s.veh_h_day, 1)} h-véh. / jour · lignes ${s.lines.map(x => esc(x.line)).join(", ")}`, {sticky: true})
       .addTo(RMAP);
     pl.on("click", () => selectRow(s.rank - 1, false));
     RLAYERS[s.rank - 1] = pl; all.push(pl);
@@ -649,8 +677,11 @@ function drawRank(R) {
   if (all.length) RMAP.fitBounds(L.featureGroup(all).getBounds(), {padding: [20, 20]});
   document.querySelectorAll("#rout tbody tr").forEach(tr => tr.addEventListener("click", e => {
     if (e.target.closest("a")) return;
+    if (PHONE.matches) tr.classList.toggle("open");   // phone: the row's detail opens on tap
     selectRow(+tr.dataset.i, true);
   }));
+  const exd = document.querySelector("#rout .rk-ex");   // the left-out list folds on phone only
+  if (exd) exd.querySelector("summary").addEventListener("click", e => { if (!PHONE.matches) e.preventDefault(); });
 }
 function selectRow(i, zoom) {
   document.querySelectorAll("#rout tbody tr").forEach(tr => tr.classList.toggle("sel", +tr.dataset.i === i));
@@ -686,7 +717,6 @@ async function boot(first) {
     $("rmode").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.mode === m)));
     if (u.get("top")) $("rtop").value = u.get("top");
     $("rterm").checked = u.get("terminus") === "true";
-    $("rstops").checked = u.get("stops") === "true";
     for (const id of ["rfrom", "rto"]) { $(id).min = INFO.ingested.from || ""; $(id).max = INFO.ingested.to || ""; }
     return runRank();
   }

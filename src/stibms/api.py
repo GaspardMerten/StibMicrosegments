@@ -18,7 +18,7 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
     GET /api/ranking?from&to&dow&holidays&mode=all|tram|bus|metro&top=50&stops=false&terminus=false
                                               costliest stretches of the network (vehicle-hours lost
                                               per day, between stops unless stops=true; termini and
-                                              regulation points left out unless terminus=true);
+                                              timing stops (vehicles waiting for the schedule) left out unless terminus=true);
                                               default window when from/to are omitted. Sums the
                                               monthly link cubes: < 1 s for any window.
     GET /api/status                           ingested range, derived months, months pending
@@ -31,11 +31,13 @@ derive time of the months involved), so a nightly ingest invalidates only what i
 Periods that are fully past and ingested are sent with ``Cache-Control: max-age=86400``.
 Heavy imports (polars, microsegments) happen on the first data request, not at start-up.
 CPU-heavy work (an analysis or comparison not in cache) runs one at a time per instance (``HEAVY``),
-so a burst of new requests cannot starve the cheap ones (health, lines, cached results, ranking).
+so a burst of new requests cannot starve the cheap ones (health, lines, cached results, ranking);
+cache hits (memory or bucket) never take that guard. Start-up warms imports and bucket listings.
 The line page hides the package's hotspots (``show_hotspots: false``), so they are not computed.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import gzip
 import io
@@ -77,7 +79,34 @@ class _Heavy:
 
 HEAVY = _Heavy()
 
-app = FastAPI(title="STIB microsegments", docs_url="/api/docs", openapi_url="/api/openapi.json")
+
+def _warm() -> None:
+    """Pay the per-process set-up during start-up (CPU boost, before Cloud Run routes traffic here)
+    rather than on the first data request: heavy imports, the bucket client and its token, the
+    listings the cache keys depend on. Cached results never wait for the HEAVY guard; what made a
+    cached analysis take ~8 s under load was this set-up landing on an instance's first request."""
+    if not os.environ.get("MS_BUCKET") or os.environ.get("MS_WARM", "1") == "0":
+        return
+    t = time.time()
+    try:
+        from . import analysis, ranking  # noqa: F401 - imports polars and the package modules
+        data = state.data
+        ing = data.ingested_dates()
+        data.derived_months()
+        if ing:
+            _stamp(data, ing[-1].replace(day=1), ing[-1])
+        log.info("warm in %.2f s", time.time() - t)
+    except Exception:  # noqa: BLE001 - never block start-up; the first request retries lazily
+        log.exception("warm-up failed")
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(app):
+    _warm()
+    yield
+
+
+app = FastAPI(title="STIB microsegments", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=_lifespan)
 
 
 # ---------------------------------------------------------------------------------- state

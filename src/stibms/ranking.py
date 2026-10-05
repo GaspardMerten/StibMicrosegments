@@ -53,8 +53,8 @@ MIN_DAYS = 5          # links seen on fewer usable days are left out (a short de
 REG_SHARE = 0.5       # share of the excess in long stands that makes a link a regulation point
 MERGE_OVERLAP = 0.8   # two links of the same stop names are one stretch when >= 80 % of the shorter ...
 MERGE_DIST_M = 30.0   # ... lies within 30 m of the longer
-REASONS = {"terminus": "terminus de la ligne", "short_terminus": "terminus partiel (arrêts de régulation)",
-           "holding": "point de régulation (arrêts de plus de 3 min)"}
+REASONS = {"terminus": "terminus de la ligne", "short_terminus": "terminus partiel (des véhicules y stationnent plus de 3 min)",
+           "holding": "arrêt où des véhicules attendent plus de 3 min pour respecter l'horaire"}
 
 
 @dataclass(frozen=True)
