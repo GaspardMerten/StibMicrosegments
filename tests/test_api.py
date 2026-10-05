@@ -152,3 +152,14 @@ def test_query_key_is_canonical():
     a = Query("55", dt.date(2025, 3, 1), dt.date(2025, 3, 31), dow=(4, 0, 1, 2, 3))
     b = Query("55", dt.date(2025, 3, 1), dt.date(2025, 3, 31), dow=(0, 1, 2, 3, 4))
     assert a.key() == b.key() != Query("55", dt.date(2025, 3, 1), dt.date(2025, 3, 31), seg=20).key()
+
+
+def test_line_absent_hours():
+    pytest.importorskip("microsegments")
+    from stibms.analysis import line_absent
+    days = [dt.date(2025, 3, 3) + dt.timedelta(days=i) for i in range(4)]
+    rows = [(d, h) for d in days for h in range(6, 22) for _ in range(30) if not (d == days[2] and h < 12)]
+    placed = pl.DataFrame(rows, schema={"service_date": pl.Date, "hour": pl.Int8}, orient="row")
+    ab = line_absent(placed, days)
+    assert ab["service_date"].unique().to_list() == [days[2]]
+    assert sorted(ab["hour"].to_list()) == list(range(6, 12))

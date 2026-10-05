@@ -52,7 +52,7 @@ def ensure_patterns(data: Data, shas: list[str], registry, force: bool = False) 
     first = dict(zip(g["sha"].to_list(), g["service_date"].to_list()))
     report = {}
     for sha in sorted(set(shas), key=lambda s: first.get(s, dt.date.max)):
-        dates = sorted(idx.filter(pl.col("sha") == sha)["service_date"].to_list())
+        dates = data.sha_dates(sha)
         base = derived(f"patterns/sha={sha}")
         if not force and data.store.exists(f"{base}/_SUCCESS"):
             have = set(data.store.read_json(f"{base}/_SUCCESS").get("dates", []))
@@ -173,7 +173,7 @@ def derive_month(data: Data, month: str, lines: list[str] | None = None, force_p
     cfg = ms.config()
     registry = data.link_registry()
     n_keys = len(registry)
-    shas = sorted(set(data.shas_for(dates).values()))
+    shas = sorted({x for c in data.candidate_shas(dates).values() for x in c})
     pat = ensure_patterns(data, shas, registry, force=force_patterns)
     if len(registry) != n_keys:
         data.store.write_parquet(derived("linkkeys.parquet"), registry.table)

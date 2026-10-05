@@ -109,6 +109,33 @@ def route_mode(data: Data, line: str, dates) -> str | None:
     return ROUTE_TYPES.get(int(r["route_type"][0]))
 
 
+LINE_ABSENT = 4          # microsegments.schema.Flag.LINE_ABSENT
+TYPICAL_MIN_OBS = 20     # an hour "normally has" the line when its median count is at least this
+
+
+def line_absent(placed: pl.DataFrame, dates) -> pl.DataFrame:
+    """(service_date, hour) where the feed was polled but carried no row of the line while that
+    hour normally has it (median over the period >= TYPICAL_MIN_OBS). Partial source days exist
+    (2025-03-31: 15 lines of ~80 in the feed); feed-level coverage cannot see them."""
+    grid = pl.DataFrame({"service_date": list(dates)}, schema={"service_date": pl.Date}).join(
+        pl.DataFrame({"hour": pl.Series(range(4, 28), dtype=pl.Int8)}), how="cross")
+    n = placed.group_by("service_date", "hour").len().with_columns(pl.col("hour").cast(pl.Int8))
+    g = grid.join(n, on=["service_date", "hour"], how="left").with_columns(pl.col("len").fill_null(0))
+    typ = g.group_by("hour").agg(pl.col("len").median().alias("typ"))
+    return (g.join(typ, on="hour").filter((pl.col("len") == 0) & (pl.col("typ") >= TYPICAL_MIN_OBS))
+            .select("service_date", "hour"))
+
+
+def with_line_absence(cov: pl.DataFrame, placed: pl.DataFrame, dates) -> pl.DataFrame:
+    if not cov.height:
+        return cov
+    ab = line_absent(placed, dates).with_columns(pl.lit(True).alias("_ab"))
+    return (cov.join(ab, on=["service_date", "hour"], how="left")
+            .with_columns(pl.when(pl.col("_ab")).then(pl.col("flags") | LINE_ABSENT).otherwise(pl.col("flags"))
+                          .cast(cov.schema["flags"]).alias("flags"))
+            .drop("_ab"))
+
+
 def run(data: Data, q: Query) -> Run:
     from microsegments.aggregate import count
     from microsegments.config import Params, Quality, Select
@@ -124,7 +151,7 @@ def run(data: Data, q: Query) -> Run:
     if placed is None or not placed.height:
         raise NotFound(f"no derived data for line {q.line} in this period")
     passages = data.passages(q.line, dates)
-    cov = data.coverage(dates)
+    cov = with_line_absence(data.coverage(dates), placed, dates)
     net = data.network(q.line, dates)
     tm["load"] = round(time.time() - t, 3)
 
@@ -188,34 +215,37 @@ def coverage_days(data: Data, line: str, first: dt.date, last: dt.date) -> list[
     qual = Quality()
     ing = set(data.ingested_dates())
     dates = date_range(first, last)
+    pl_ = data.placed(line, dates)
     cov = data.coverage(dates)
+    if pl_ is not None:
+        cov = with_line_absence(cov, pl_, [d for d in dates if d in ing])
     per: dict[dt.date, tuple[float, int]] = {}
     if cov.height:
         g = (cov.filter(pl.col("hour").is_between(6, 20))
              .group_by("service_date")
              .agg(pl.col("coverage").mean().alias("c"),
-                  ((pl.col("coverage") < qual.min_hour_coverage) | ((pl.col("flags") & 3) != 0)).sum().alias("bad")))
-        per = {r[0]: (float(r[1]), int(r[2])) for r in g.iter_rows()}
+                  ((pl.col("coverage") < qual.min_hour_coverage) | ((pl.col("flags") & 3) != 0)).sum().alias("bad"),
+                  ((pl.col("flags") & LINE_ABSENT) != 0).sum().alias("absent")))
+        per = {r[0]: (float(r[1]), int(r[2]), int(r[3])) for r in g.iter_rows()}
     obs: dict[dt.date, int] = {}
-    pl_ = data.placed(line, dates)
     if pl_ is not None:
         obs = dict(pl_.group_by("service_date").len().iter_rows())
     hd = hol.between(first, last)
     out = []
     for d in dates:
-        c, bad = per.get(d, (None, None))
+        c, bad, absent = per.get(d, (None, None, None))
         if d not in ing:
             status = "not_ingested"
         elif c is None:
             status = "no_data"
         elif bad / 15 > 1 - qual.min_day_coverage + 1e-9:
             status = "low_coverage"
-        elif not obs.get(d):
+        elif not obs.get(d) or (bad + absent) / 15 > 1 - qual.min_day_coverage + 1e-9:
             status = "line_absent"
         else:
             status = "ok"
         out.append({"date": d.isoformat(), "dow": d.weekday(), "coverage": None if c is None else round(c, 3),
-                    "hours_bad": bad, "obs": int(obs.get(d, 0)), "holiday": hd.get(d), "status": status})
+                    "hours_bad": bad, "hours_line_absent": absent, "obs": int(obs.get(d, 0)), "holiday": hd.get(d), "status": status})
     return out
 
 

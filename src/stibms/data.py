@@ -27,6 +27,8 @@ import polars as pl
 from .storage import Store
 
 ALGO_VERSION = 1
+FALLBACK_DAYS = 7     # a feed's network also covers this many days after its last own date
+FALLBACK_FEEDS = 2    # earlier feeds tried when a date's own feed has no trip of the line
 GTFS_TABLES = ("routes", "trips", "stop_times", "stops", "shapes", "calendar", "calendar_dates")
 PLACED_COLS = ("ts", "service_date", "hour", "dow", "pattern_uid", "direction_id", "link_idx", "link_key",
                "pos_m", "s_m", "raw_dist_m", "track_id", "count", "flags")
@@ -108,6 +110,45 @@ class Data:
         ds = set(dates)
         idx = self.gtfs_index().filter(pl.col("service_date").is_in(list(ds)))
         return dict(zip(idx["service_date"].to_list(), idx["sha"].to_list()))
+
+    def sha_dates(self, sha: str) -> list[dt.date]:
+        """Dates a feed's network is built for: its own index dates plus the dates of the following
+        feeds within FALLBACK_DAYS after its last own date. STIB sometimes publishes, on the morning
+        of D, a feed whose calendar starts after D (2025-05-16, 2025-05-20 on line 55): the previous
+        feed still describes D, and ``network`` falls back on it."""
+        idx = self.gtfs_index()
+        own = idx.filter(pl.col("sha") == sha)["service_date"].to_list()
+        if not own:
+            return []
+        last = max(own)
+        later = idx.filter((pl.col("service_date") > last)
+                           & (pl.col("service_date") <= last + dt.timedelta(days=FALLBACK_DAYS)))["service_date"]
+        return sorted(set(own) | set(later.to_list()))
+
+    def candidate_shas(self, dates) -> dict[dt.date, list[str]]:
+        """service_date -> [its own sha, then up to FALLBACK_FEEDS earlier distinct shas]."""
+        idx = self.gtfs_index()
+        shas = idx["sha"].to_list()
+        days = idx["service_date"].to_list()
+        # distinct feeds in date order, with the position of each date's feed
+        order: list[str] = []
+        pos: dict[dt.date, int] = {}
+        for d, sh in zip(days, shas):
+            if not order or order[-1] != sh:
+                order.append(sh)
+            pos[d] = len(order) - 1
+        out = {}
+        for d in dates:
+            if d in pos:
+                i = pos[d]
+                cands = []
+                for j in range(i, -1, -1):
+                    if order[j] not in cands:
+                        cands.append(order[j])
+                    if len(cands) > FALLBACK_FEEDS:
+                        break
+                out[d] = cands
+        return out
 
     def feed_dir(self, sha: str) -> str:
         """Local directory of a GTFS feed (downloaded once to the cache dir when on GCS)."""
@@ -196,27 +237,34 @@ class Data:
         from microsegments import schema
 
         line = str(line)
-        by_date = self.shas_for(dates)
-        pats, links, stops, days = [], [], [], []
-        order = sorted(set(by_date.values()), key=lambda s: min(d for d, x in by_date.items() if x == s))
+        cands = self.candidate_shas(dates)
+        order = sorted({x for c in cands.values() for x in c})
         if len(order) > 1:
             with ThreadPoolExecutor(max_workers=min(8, len(order))) as ex:
                 tables = dict(zip(order, ex.map(self.sha_tables, order)))
         else:
             tables = {s: self.sha_tables(s) for s in order}
-        for sha in order:
+        # this line's pattern days per feed, then for each date the first feed that runs the line
+        line_days: dict[str, pl.DataFrame] = {}
+        for sha, t in tables.items():
+            if t is not None:
+                line_days[sha] = t["pattern_days"].filter(pl.col("line") == line)
+        pick: dict[str, list[dt.date]] = {}
+        for d, cs in cands.items():
+            for sha in cs:
+                ld = line_days.get(sha)
+                if ld is not None and ld.height and (ld["service_date"] == d).any():
+                    pick.setdefault(sha, []).append(d)
+                    break
+        pats, links, stops, days = [], [], [], []
+        for sha, mine in pick.items():
             t = tables[sha]
-            if t is None:
-                continue
-            mine = [d for d, x in by_date.items() if x == sha]
             p = t["patterns"].filter(pl.col("line") == line)
-            if not p.height:
-                continue
             uids = p["pattern_uid"].implode()
             pats.append(p)
             links.append(t["links"].filter(pl.col("pattern_uid").is_in(uids)))
             stops.append(t["stops"].filter(pl.col("line") == line))
-            days.append(t["pattern_days"].filter((pl.col("line") == line) & pl.col("service_date").is_in(mine)))
+            days.append(line_days[sha].filter(pl.col("service_date").is_in(mine)))
         pd_schema = {**schema.PATTERN_DAY, **PATTERN_DAY_EXTRA}
         if not pats:
             patterns = pl.DataFrame(schema=schema.PATTERN)
