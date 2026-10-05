@@ -552,12 +552,37 @@ _LOADER = """<script>
     s.textContent = main.textContent;
     document.body.appendChild(s);
     try { parent.postMessage({ms: "ready"}, "*"); } catch (x) {}
+    // the platform page sizes this frame to its content (no scroll inside a scroll)
+    var last = 0;
+    function size() {
+      var h = Math.ceil(document.documentElement.scrollHeight);
+      if (h !== last) { last = h; try { parent.postMessage({ms: "height", h: h}, "*"); } catch (x) {} }
+    }
+    size();
+    try { new ResizeObserver(size).observe(document.body); } catch (x) {}
+    window.addEventListener("resize", size);
+    document.addEventListener("fullscreenchange", function () { setTimeout(size, 50); });
+    window.addEventListener("load", size);
   }).catch(function (e) {
     document.body.innerHTML = '<p style="color:#c0392b;font:15px system-ui;padding:16px">' + e.message.replace(/</g, "&lt;") + "</p>";
     try { parent.postMessage({ms: "error", message: e.message}, "*"); } catch (x) {}
   });
 })();
 </script>"""
+
+
+def _matrix_first(html: str) -> str:
+    """Platform layout: the hour x micro-segment matrix (the most used view) right after the
+    controls, above the map. Moves the rendered ``#mxcard`` section; the package template is
+    unchanged and the page works the same if the markers are not found."""
+    import re
+    m = re.search(r'\s*<section class="card" id="mxcard">.*?</section>', html, flags=re.S)
+    g = html.find('<div class="grid">')
+    if not m or g < 0 or g > m.start():
+        return html
+    block = m.group(0)
+    html = html[:m.start()] + html[m.end():]
+    return html[:g] + block.strip() + "\n  " + html[g:]
 
 
 def _template() -> str | None:
@@ -576,6 +601,9 @@ def _template() -> str | None:
     m = re.search(r'<script id="ms-data" type="application/json">.*?</script>\s*<script>(.*?)</script>', html, flags=re.S)
     if not m:
         return None
+    a, b = m.span(1)
+    html = _matrix_first(html)
+    m = re.search(r'<script id="ms-data" type="application/json">.*?</script>\s*<script>(.*?)</script>', html, flags=re.S)
     a, b = m.span(1)
     html = (html[:m.start()] + '<script id="ms-data" type="application/json"></script>\n'
             + '<script type="text/plain" id="ms-main">' + html[a:b] + "</script>" + html[m.end():])

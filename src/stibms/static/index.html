@@ -101,8 +101,7 @@ details.more .opts { display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:10p
 
 /* ---------------------------------------------------------------- analysis frame */
 #view { margin-top:6px; }
-#view iframe { display:block; width:100%; border:0; background:var(--paper); height:100vh; height:100dvh; }
-@media (max-width:899px) { #view iframe { height:1600px; } }
+#view iframe { display:block; width:100%; border:0; background:var(--paper); height:600px; overflow:hidden; }
 .empty { padding:60px 0; text-align:center; color:var(--ink-3); }
 
 /* ---------------------------------------------------------------- ranking */
@@ -466,25 +465,21 @@ async function runLine() {
 }
 function showFrame(p, me, elapsed) {
   return new Promise(resolve => {
-    $("view").innerHTML = `<iframe src="/view?${p}" title="Analyse de la ligne ${esc(p.get("line"))}"></iframe>`;
+    $("view").innerHTML = `<iframe src="/view?${p}" scrolling="no" allowfullscreen title="Analyse de la ligne ${esc(p.get("line"))}"></iframe>`;
     const fr = $("view").querySelector("iframe");
+    let settled = false;
     const onMsg = ev => {
       if (ev.source !== fr.contentWindow || !ev.data || !ev.data.ms) return;
-      window.removeEventListener("message", onMsg);
+      if (ev.data.ms === "height") { fr.style.height = ev.data.h + "px"; return; }   // the frame takes its page's height
+      if (settled) return;
+      settled = true;
       if (me !== RUN) return resolve();
       if (ev.data.ms === "error") { done($("status"), esc(ev.data.message), true); $("view").innerHTML = ""; }
-      else { done($("status"), `Ligne ${esc(p.get("line"))} · prêt en ${nf(elapsed(), 1)} s`); fitFrame(fr); }
+      else done($("status"), `Ligne ${esc(p.get("line"))} · prêt en ${nf(elapsed(), 1)} s`);
       resolve();
     };
     window.addEventListener("message", onMsg);
   });
-}
-function fitFrame(fr) {
-  // narrow screens: the frame takes the height of its page (no scroll inside a scroll)
-  if (window.innerWidth >= 900) return;
-  const set = () => { try { fr.style.height = fr.contentDocument.documentElement.scrollHeight + "px"; } catch (e) {} };
-  set();
-  try { new ResizeObserver(set).observe(fr.contentDocument.body); } catch (e) {}
 }
 $("f").addEventListener("submit", e => { e.preventDefault(); runLine(); });
 
