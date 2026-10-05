@@ -17,10 +17,13 @@ dependencies = [
 [project.optional-dependencies]
 # The analysis package; the ingest does not need it. Pinned to a minor version once released.
 analysis = ["microsegments"]
-dev = ["pytest>=8.0"]
+# The API (also needs microsegments; the Dockerfile installs it first).
+api = ["fastapi>=0.110", "uvicorn>=0.29"]
+dev = ["pytest>=8.0", "fastapi>=0.110", "httpx>=0.27"]
 
 [project.scripts]
 stibms-ingest = "stibms.ingest:main"
+stibms-derive = "stibms.derive:main"
 
 [tool.uv.sources]
 microsegments = { path = "../microsegments", editable = true }

@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STIB micro-segments</title>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+:root { color-scheme: dark; --bg:#091124; --fg:#eef1f6; --muted:#7f8aa3; --line:#24324f; --card:#101a30; --accent:#F3C300; --bad:#ff8a80; --warn:#d68910; }
+:root[data-theme="light"] { color-scheme: light; --bg:#f7f7f5; --fg:#1d1d1b; --muted:#6b6b66; --line:#d9d9d4; --card:#fff; --accent:#0b5cad; }
+* { box-sizing: border-box; }
+body { margin:0; font:14px/1.45 "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
+header { padding:10px 16px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; z-index:1000; }
+h1 { font-size:16px; margin:0 0 8px; font-weight:600; }
+h1 small { color:var(--muted); font-weight:400; }
+form { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:end; }
+label { display:flex; flex-direction:column; gap:2px; font-size:12px; color:var(--muted); }
+input, select, button { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:4px 6px; }
+input[type=number] { width:70px; }
+button { background:var(--accent); color:#091124; font-weight:600; border-color:var(--accent); cursor:pointer; padding:5px 14px; }
+button:disabled { opacity:.5; cursor:wait; }
+.dow { display:flex; gap:2px; }
+.dow label { flex-direction:row; align-items:center; gap:2px; color:var(--fg); font-size:13px; }
+.badge { display:inline-block; min-width:28px; padding:1px 6px; border-radius:3px; font-weight:600; text-align:center; }
+main { padding:12px 16px 40px; max-width:1500px; margin:0 auto; }
+#status { color:var(--muted); font-size:13px; margin:6px 0; min-height:1.4em; }
+#status.err { color:var(--bad); }
+.card { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin:10px 0; }
+.card h2 { font-size:14px; margin:0 0 8px; }
+#cal { display:flex; flex-wrap:wrap; gap:2px; }
+#cal div { width:14px; height:14px; border-radius:2px; }
+.legend { font-size:12px; color:var(--muted); display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; }
+.legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:3px; vertical-align:-1px; }
+iframe { width:100%; height:calc(100vh - 120px); min-height:700px; border:0; border-radius:6px; background:var(--bg); }
+table { border-collapse:collapse; width:100%; font-size:13px; }
+th, td { text-align:left; padding:3px 6px; border-bottom:1px solid var(--line); }
+th { color:var(--muted); font-weight:500; }
+.heat { width:100%; overflow-x:auto; }
+canvas { display:block; }
+#map { height:420px; border-radius:6px; }
+.row { display:flex; gap:12px; flex-wrap:wrap; }
+.row > * { flex:1 1 420px; min-width:0; }
+a { color:var(--accent); }
+.muted { color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Où les véhicules STIB s'attardent-ils ? <small>observations par micro-segment</small></h1>
+  <form id="f">
+    <label>Ligne <select id="line" name="line" required></select></label>
+    <label>Du <input type="date" id="from" name="from" required></label>
+    <label>Au <input type="date" id="to" name="to" required></label>
+    <label>Jours
+      <span class="dow" id="dow"></span>
+    </label>
+    <label>Segment (m) <input type="number" id="seg" name="seg" min="5" max="500" step="5" value="30"></label>
+    <label>Jours fériés
+      <select id="holidays" name="holidays"><option value="exclude">exclus</option><option value="include">inclus</option></select>
+    </label>
+    <label>Référence <select id="ref" name="ref"><option value="20-23">20-23 h</option><option value="21-23">21-23 h</option></select></label>
+    <button id="go" type="submit">Afficher</button>
+  </form>
+</header>
+<main>
+  <div id="status"></div>
+  <div class="card" id="covcard" hidden>
+    <h2>Couverture du flux <span class="muted" id="covsum"></span></h2>
+    <div id="cal"></div>
+    <div class="legend">
+      <span><i style="background:#2e8b57"></i>inclus</span><span><i style="background:#d68910"></i>couverture faible</span>
+      <span><i style="background:#c0392b"></i>pas de données</span><span><i style="background:#7d3c98"></i>férié</span>
+      <span><i style="background:#999"></i>non sélectionné</span>
+    </div>
+  </div>
+  <div class="card" id="vercard" hidden><h2>Versions GTFS</h2><div id="versions"></div></div>
+  <div id="view"></div>
+</main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const DOW = ["Lu","Ma","Me","Je","Ve","Sa","Di"];
+const REASONS = {low_coverage:"couverture faible", no_data:"pas de données", frozen:"flux figé", holiday:"férié",
+                 excluded:"exclu", line_absent:"ligne absente", not_ingested:"non ingéré", deviation:"déviation"};
+let LINES = [];
+
+for (let i = 0; i < 7; i++) {
+  const l = document.createElement("label");
+  l.innerHTML = `<input type="checkbox" value="${i}" ${i < 5 ? "checked" : ""}>${DOW[i]}`;
+  $("dow").appendChild(l);
+}
+const iso = d => d.toISOString().slice(0, 10);
+const addDays = (s, n) => { const d = new Date(s + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return iso(d); };
+const status = (msg, err) => { $("status").textContent = msg || ""; $("status").className = err ? "err" : ""; };
+
+function params() {
+  const p = new URLSearchParams();
+  p.set("line", $("line").value); p.set("from", $("from").value); p.set("to", $("to").value);
+  const dows = [...$("dow").querySelectorAll("input:checked")].map(x => x.value);
+  p.set("dow", dows.join(",") || "0"); p.set("seg", $("seg").value || "30");
+  p.set("holidays", $("holidays").value); p.set("ref", $("ref").value);
+  return p;
+}
+function fromUrl() {
+  const u = new URLSearchParams(location.search);
+  for (const k of ["from", "to", "seg", "holidays", "ref"]) if (u.get(k)) $(k).value = u.get(k);
+  if (u.get("dow")) {
+    const s = new Set(u.get("dow").split(",").flatMap(x => x.includes("-") ?
+      Array.from({length: +x.split("-")[1] - +x.split("-")[0] + 1}, (_, i) => String(+x.split("-")[0] + i)) : [x]));
+    $("dow").querySelectorAll("input").forEach(i => i.checked = s.has(i.value));
+  }
+  return u.get("line");
+}
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch (e) {} throw new Error(m); }
+  return r.json();
+}
+
+async function init() {
+  const want = fromUrl();
+  const L = await getJSON("/api/lines");
+  LINES = L.lines;
+  const modes = {metro: "Métro", tram: "Tram", bus: "Bus"};
+  const groups = {};
+  for (const l of LINES) (groups[l.mode || "autre"] ||= []).push(l);
+  for (const [m, ls] of Object.entries(groups)) {
+    const og = document.createElement("optgroup"); og.label = modes[m] || m;
+    for (const l of ls) {
+      const o = document.createElement("option"); o.value = l.line;
+      o.textContent = `${l.line} · ${(l.name || "").toLowerCase()}${l.available ? "" : " (pas de données)"}`;
+      og.appendChild(o);
+    }
+    $("line").appendChild(og);
+  }
+  const withData = LINES.filter(l => l.available);
+  $("line").value = want || (withData.find(l => l.line === "55") || withData[0] || LINES[0] || {}).line;
+  if (!$("to").value) {
+    const l = LINES.find(x => x.line === $("line").value);
+    const last = (l && l.available && l.available.to) || L.ingested.to;
+    $("to").value = last; $("from").value = addDays(last, -27);
+  }
+  if (want) run();
+}
+$("line").addEventListener("change", () => {
+  const l = LINES.find(x => x.line === $("line").value);
+  if (l && l.available && $("to").value > l.available.to) { $("to").value = l.available.to; $("from").value = addDays(l.available.to, -27); }
+});
+$("f").addEventListener("submit", e => { e.preventDefault(); run(); });
+
+async function run() {
+  const p = params();
+  history.replaceState(null, "", "?" + p);
+  $("go").disabled = true;
+  status("Calcul en cours… (la première requête d'une période peut prendre quelques secondes)");
+  const t0 = performance.now();
+  try {
+    const per = new URLSearchParams({line: p.get("line"), from: p.get("from"), to: p.get("to")});
+    const [cov, ver] = await Promise.all([getJSON("/api/coverage?" + per), getJSON("/api/versions?" + per)]);
+    drawCoverage(cov, p); drawVersions(ver);
+    const view = await fetch("/view?" + p, {method: "HEAD"}).then(r => r.ok).catch(() => false);
+    if (view) {
+      $("view").innerHTML = `<iframe src="/view?${p}" title="analyse"></iframe>`;
+      const fr = $("view").querySelector("iframe");
+      fr.onload = () => status(`Ligne ${p.get("line")} · ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+    } else {
+      const D = await getJSON("/api/analysis?" + p);
+      drawFallback(D, p);
+      status(`Ligne ${D.line} · ${D.period.days} jours inclus · ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+    }
+  } catch (e) { status("Erreur : " + e.message, true); $("view").innerHTML = ""; }
+  $("go").disabled = false;
+}
+
+function drawCoverage(cov, p) {
+  const dows = new Set(p.get("dow").split(","));
+  const cal = $("cal"); cal.innerHTML = "";
+  let ok = 0, bad = [];
+  for (const d of cov.days) {
+    const el = document.createElement("div");
+    const sel = dows.has(String(d.dow));
+    let col = "#2e8b57";
+    if (!sel) col = "#999";
+    else if (d.holiday && p.get("holidays") === "exclude") col = "#7d3c98";
+    else if (d.status === "low_coverage") col = "#d68910";
+    else if (d.status !== "ok") col = "#c0392b";
+    if (sel && col === "#2e8b57") ok++;
+    if (sel && col !== "#2e8b57") bad.push(d);
+    el.style.background = col;
+    el.title = `${d.date} ${DOW[d.dow]} · couverture ${d.coverage == null ? "–" : Math.round(d.coverage * 100) + " %"}`
+      + ` · ${d.obs} obs.${d.holiday ? " · " + d.holiday : ""} · ${REASONS[d.status] || d.status}`;
+    cal.appendChild(el);
+  }
+  $("covsum").textContent = `· ${ok} jours utilisables, ${bad.length} écartés` +
+    (bad.length ? " (" + bad.slice(0, 6).map(d => d.date.slice(5) + " " + (d.holiday ? "férié" : REASONS[d.status] || d.status)).join(", ") + (bad.length > 6 ? "…" : "") + ")" : "");
+  $("covcard").hidden = false;
+}
+
+function drawVersions(v) {
+  const rows = v.versions.map(r => `<tr><td>${r.direction_id}</td><td>${r.from} → ${r.to}</td><td>${r.first} … ${r.last}</td>`
+    + `<td>${r.n_days}</td><td>${r.n_stops}</td><td>${r.display ? "affichée" : ""}</td>`
+    + `<td class="muted">${r.links_added.length ? "+" + r.links_added.length + " tronçons" : ""} ${r.links_removed.length ? "−" + r.links_removed.length + " tronçons" : ""}</td></tr>`).join("");
+  $("versions").innerHTML = `<table><tr><th>Sens</th><th>Parcours</th><th>Période</th><th>Jours</th><th>Arrêts</th><th></th><th>Différences</th></tr>${rows}</table>`;
+  $("vercard").hidden = !v.versions.length;
+}
+
+// ------------------------------------------------------------------ fallback view (no package template)
+const METRICS = {
+  obs_h: {label: "observations par heure couverte, par 100 m", f: (o, c, p, len) => c > 0 ? o / c / len * 100 : null},
+  obs_p: {label: "observations par passage", f: (o, c, p) => p > 0 ? o / p : null},
+};
+function colour(t) {   // 0..1 -> light yellow to dark red
+  const stops = [[255,255,204],[254,217,118],[253,141,60],[227,26,28],[128,0,38]];
+  t = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+  const i = Math.min(Math.floor(t), stops.length - 2), u = t - i;
+  return `rgb(${stops[i].map((a, k) => Math.round(a + (stops[i + 1][k] - a) * u)).join(",")})`;
+}
+function matrix(dir, D, dows, metric) {
+  const H = D.hours.length, K = dir.seg.key.length, wk = dir.wk;
+  const M = [];
+  for (let h = 0; h < H; h++) {
+    const row = [];
+    for (let k = 0; k < K; k++) {
+      const l = dir.seg.link[k];
+      let o = 0, c = 0, p = 0;
+      for (const w of dows) { o += wk.obs[w][h][k]; c += wk.cov[w][h][l]; p += wk.p[w][h][l]; }
+      row.push(METRICS[metric].f(o, c, p, dir.seg.len[k]));
+    }
+    M.push(row);
+  }
+  return M;
+}
+function p98(M) {
+  const v = M.flat().filter(x => x != null && isFinite(x)).sort((a, b) => a - b);
+  return v.length ? v[Math.floor(v.length * 0.98)] || v[v.length - 1] : 1;
+}
+let MAP = null;
+function drawFallback(D, p) {
+  const dows = p.get("dow").split(",").map(Number);
+  const metric = "obs_h";
+  const ex = D.period.excluded.map(e => `${e.date} (${REASONS[e.reason] || e.reason})`).join(", ");
+  let html = `<div class="card"><h2>Ligne ${D.line} · ${D.mode || ""} · ${D.period.first} → ${D.period.last}</h2>
+    <div>${D.period.days} jours inclus (${D.period.per_dow.map((n, i) => n ? DOW[i] + " " + n : "").filter(Boolean).join(", ")}).
+    ${ex ? "Jours écartés : " + ex + "." : "Aucun jour écarté."}</div>
+    <div class="muted">Segments de ${D.params.segment_m} m · référence ${D.params.reference_hours.join("-")} h ·
+    <a href="/api/analysis.csv?${p}">CSV</a> · <a href="/api/analysis.parquet?${p}">Parquet</a> ·
+    <a href="/api/hotspots.csv?${p}">points noirs CSV</a> · <a href="/api/analysis?${p}">JSON</a></div></div>
+    <div class="card"><h2>Carte · ${METRICS[metric].label}, heures 7-19</h2><div id="map"></div></div>`;
+  D.dirs.forEach((d, i) => {
+    html += `<div class="card"><h2>Sens ${d.dir} : ${d.from} → ${d.to} <span class="muted">· ${METRICS[metric].label}</span></h2>
+      <div class="heat"><canvas id="hm${i}"></canvas></div></div>`;
+  });
+  const hs = (D.hotspots || []).slice(0, 15).map(h => `<tr><td>${h.dir}</td><td>${h.rank}</td><td>${h.from_stop_name} → ${h.to_stop_name}</td>
+    <td>${h.zone === "stop" ? "arrêt" : "roulage"}</td><td>${h.kind}</td><td>${(h.hours || []).join(", ")}</td>
+    <td>${(+h.excess_per_passage).toFixed(2)} [${(+h.ci_lo).toFixed(2)}; ${(+h.ci_hi).toFixed(2)}]</td><td>${Math.round(h.persistence * 100)} %</td></tr>`).join("");
+  html += `<div class="card"><h2>Points noirs</h2>${hs ? `<table><tr><th>Sens</th><th>#</th><th>Tronçon</th><th>Zone</th><th>Type</th><th>Heures</th>
+    <th>Excès obs./passage [IC]</th><th>Persistance</th></tr>${hs}</table>` : "Aucun point noir significatif."}</div>`;
+  $("view").innerHTML = html;
+
+  const all = [];
+  D.dirs.forEach((d, i) => {
+    const M = matrix(d, D, dows, metric), mx = p98(M);
+    const cv = $("hm" + i), K = d.seg.key.length, H = D.hours.length;
+    const cw = Math.max(2, Math.floor((cv.parentElement.clientWidth - 40) / K)), ch = 14;
+    cv.width = 40 + K * cw; cv.height = H * ch + 4;
+    const g = cv.getContext("2d");
+    g.font = "10px system-ui"; g.fillStyle = getComputedStyle(document.body).color;
+    D.hours.forEach((h, r) => {
+      g.fillText(h + " h", 2, r * ch + 11);
+      for (let k = 0; k < K; k++) {
+        const v = M[r][k];
+        g.fillStyle = v == null ? "#ddd" : colour(v / mx);
+        g.fillRect(40 + k * cw, r * ch, cw, ch - 1);
+      }
+      g.fillStyle = getComputedStyle(document.body).color;
+    });
+    // day band for the map
+    const band = D.hours.map((h, r) => h >= 7 && h < 19 ? r : -1).filter(r => r >= 0);
+    const dm = matrix(d, D, dows, metric);
+    d.seg.c.forEach((c, k) => {
+      const vs = band.map(r => dm[r][k]).filter(v => v != null);
+      all.push({c, v: vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null, mx, dir: d.dir,
+                name: `${d.links[d.seg.link[k]].from} → ${d.links[d.seg.link[k]].to}`});
+    });
+  });
+  if (MAP) { MAP.remove(); MAP = null; }
+  MAP = L.map("map");
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+    attribution: "© OpenStreetMap, © CARTO", maxZoom: 19}).addTo(MAP);
+  const layers = [];
+  for (const s of all) {
+    if (!s.c || s.c.length < 2) continue;
+    const ll = s.c.map(([x, y]) => [y, x]);
+    layers.push(L.polyline(ll, {color: s.v == null ? "#aaa" : colour(s.v / s.mx), weight: s.dir ? 4 : 7, opacity: .9})
+      .bindTooltip(`${s.name}<br>${s.v == null ? "–" : s.v.toFixed(2)}`));
+  }
+  const grp = L.featureGroup(layers).addTo(MAP);
+  if (layers.length) MAP.fitBounds(grp.getBounds(), {padding: [10, 10]});
+}
+init().catch(e => status("Erreur : " + e.message, true));
+</script>
+</body>
+</html>

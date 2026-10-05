@@ -86,6 +86,25 @@ def ingest_date(mt: MobilityTwin, store: Store, d: date, force: bool = False, wo
     return report
 
 
+def derive_months(store: Store, months: list[str]) -> bool:
+    """Run stibms.derive on ``months`` (all lines). Returns True if something failed."""
+    import importlib.util
+    if importlib.util.find_spec("microsegments") is None:
+        log.warning("microsegments is not installed: derive skipped")
+        return False
+    from . import derive
+    from .data import Data
+    data, bad = Data(store), False
+    for m in months:
+        try:
+            rep = derive.derive_month(data, m)
+            bad |= bool(rep.get("failed"))
+        except Exception:
+            log.error("derive %s failed:\n%s", m, traceback.format_exc())
+            bad = True
+    return bad
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m stibms.ingest", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -99,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--force", action="store_true", help="rewrite dates that have a _SUCCESS")
     ap.add_argument("--workers", type=int, default=vd.WORKERS)
     ap.add_argument("--no-index", action="store_true", help="do not rebuild gtfs/index.parquet")
+    ap.add_argument("--no-derive", action="store_true",
+                    help="do not re-derive the touched months afterwards (always skipped with --shard-from-env)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 
@@ -115,15 +136,22 @@ def main(argv: list[str] | None = None) -> int:
         log.info("task %d/%d: %d dates", idx, cnt, len(dates))
 
     store, mt = Store(root), MobilityTwin()
-    failed = []
+    failed, done = [], []
     for d in dates:
         try:
-            ingest_date(mt, store, d, force=args.force, workers=args.workers)
+            if ingest_date(mt, store, d, force=args.force, workers=args.workers) is not None:
+                done.append(d)
         except Exception:  # keep going; the job retries and done dates are skipped
             log.error("%s failed:\n%s", d, traceback.format_exc())
             failed.append(d)
     if not args.no_index:
         gtfs.rebuild_index(store)
+    # Re-derive the months that got new days (the nightly run: the current month, all lines).
+    # Backfill tasks run in parallel and would race on the link-key registry: they skip this and
+    # the months are derived afterwards with python -m stibms.derive --from A --to B.
+    if done and not args.no_derive and not args.shard_from_env:
+        if derive_months(store, sorted({f"{d.year:04d}-{d.month:02d}" for d in done})):
+            return 1
     if failed:
         log.error("%d dates failed: %s", len(failed), ", ".join(map(str, failed)))
         return 1
