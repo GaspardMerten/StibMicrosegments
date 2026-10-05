@@ -39,6 +39,7 @@ from .data import ALGO_VERSION, Data, date_range, month_dates
 
 log = logging.getLogger("stibms.ranking")
 MODES = ("all", "tram", "bus", "metro")
+RANK_VERSION = 2      # bump when link_costs / assemble change meaning (new cache keys)
 DEFAULT_PTR = f"results/v{ALGO_VERSION}/ranking-default.json"
 _line_locks: dict[str, threading.Lock] = {}
 _lk = threading.Lock()
@@ -77,7 +78,7 @@ class RankQuery:
         c = self.canonical()
         c.pop("mode")      # mode and terminus only filter the parts; parts are shared
         c.pop("terminus")
-        blob = json.dumps([c, ALGO_VERSION, ms.version(), stamp], sort_keys=True)
+        blob = json.dumps([c, ALGO_VERSION, RANK_VERSION, ms.version(), stamp], sort_keys=True)
         return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 

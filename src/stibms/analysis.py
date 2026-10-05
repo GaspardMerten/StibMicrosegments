@@ -366,26 +366,30 @@ def link_costs(r: Run) -> pl.DataFrame:
     """Vehicle time lost per day on each link (stop pair) of the line, 6-21 h on the included days.
 
     Per segment, the day band (``hour`` = -3) gives excess E = O - r (obs per passage over the
-    evening reference) and passages P (summed over included days); E x P / n_days x tick_s = seconds
-    of vehicle time per day above the evening (= the sum over day hours of excess x passages, since
+    evening reference) and passages P (summed over included days); E x P / D x tick_s = seconds
+    of vehicle time per day above the evening, D = included days of the line (an average day of the
+    period: a link served on a few days only, e.g. a detour, weighs accordingly; links on fewer than
+    ``Quality.min_days`` days are left out as unreliable) (= the sum over day hours of excess x passages, since
     the band's O is a ratio of sums). Summed over the segments of the link (signed: a faster bit
     offsets a slower one). ``veh_s_day_line`` is the same against the line-level reference.
     ``terminal``: first or last link of one of the line's patterns (dwell there is mostly regulation
     time at the terminus, which the ranking leaves out by default)."""
     tick = r.analysis.params.tick_s
     res = r.analysis.result
-    if not res.height:
+    D = len(r.analysis.days)
+    if not res.height or not D:
         return pl.DataFrame(schema=LINK_COST_SCHEMA)
-    res = res.unique(["direction_id", "seg_key", "hour"], keep="first")
+    min_days = r.analysis.quality.min_days
+    res = res.unique(["direction_id", "seg_key", "hour"], keep="first").filter(pl.col("n_days") >= min_days)
     day = res.filter(pl.col("hour") == -3)
-    per_day = pl.col("passages") / pl.col("n_days").cast(pl.Float64)
-    seg = day.filter(pl.col("n_days") > 0).with_columns(
+    per_day = pl.col("passages") / D
+    seg = day.with_columns(
         (pl.col("excess_per_passage").fill_null(0) * per_day * tick).alias("s"),
         (pl.col("excess_line_per_passage").fill_null(0) * per_day * tick).alias("sl"),
         per_day.alias("pd"))
     # strongest hour of each link (most vehicle time lost)
-    hrs = (res.filter((pl.col("hour") >= 6) & (pl.col("hour") < 21) & (pl.col("n_days") > 0))
-           .with_columns((pl.col("excess_per_passage").fill_null(0) * pl.col("passages") / pl.col("n_days").cast(pl.Float64)).alias("s"))
+    hrs = (res.filter((pl.col("hour") >= 6) & (pl.col("hour") < 21))
+           .with_columns((pl.col("excess_per_passage").fill_null(0) * pl.col("passages")).alias("s"))
            .group_by("direction_id", "link_key", "hour").agg(pl.col("s").sum())
            .sort("s", descending=True).unique(["direction_id", "link_key"], keep="first")
            .select("direction_id", "link_key", pl.col("hour").alias("peak_hour")))
