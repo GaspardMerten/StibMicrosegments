@@ -19,6 +19,7 @@ import datetime as dt
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import polars as pl
@@ -130,7 +131,18 @@ class Data:
                             ttl=1e9)
 
     def read_optional(self, rel: str) -> pl.DataFrame | None:
-        return self.store.read_parquet(rel) if self.store.exists(rel) else None
+        """One request instead of exists + read (matters on GCS)."""
+        try:
+            return self.store.read_parquet(rel)
+        except FileNotFoundError:
+            return None
+
+    def read_many(self, rels: list[str]) -> list[pl.DataFrame | None]:
+        """read_optional over several files, in parallel threads (GCS latency)."""
+        if len(rels) <= 1:
+            return [self.read_optional(r) for r in rels]
+        with ThreadPoolExecutor(max_workers=min(16, len(rels))) as ex:
+            return list(ex.map(self.read_optional, rels))
 
     def snapshots(self, dates) -> pl.DataFrame:
         """SNAPSHOT frame (ts UTC, n_rows, frozen) of the given ingested dates."""
@@ -158,15 +170,20 @@ class Data:
         """patterns / links / stops / pattern_days of one feed, all lines (cached; a feed's tables
         only change when its date set grows, see derive.ensure_patterns)."""
         base = derived(f"patterns/sha={sha}")
+
+        def read_stamp():
+            try:
+                return self.store.read_json(f"{base}/_SUCCESS").get("written_at")
+            except FileNotFoundError:
+                return None
+        stamp = self._cached(f"shastamp:{sha}", read_stamp)
         hit = self._sha_tables.get(sha)
-        stamp = None
-        if self.store.exists(f"{base}/_SUCCESS"):
-            stamp = self.store.read_json(f"{base}/_SUCCESS").get("written_at")
         if hit is not None and hit.get("_stamp") == stamp:
             return hit
         if stamp is None:
             return None
-        out = {n: self.store.read_parquet(f"{base}/{n}.parquet") for n in ("patterns", "links", "stops", "pattern_days")}
+        names = ("patterns", "links", "stops", "pattern_days")
+        out = dict(zip(names, self.read_many([f"{base}/{n}.parquet" for n in names])))
         out["_stamp"] = stamp  # type: ignore[assignment]
         with self._lock:
             self._sha_tables[sha] = out
@@ -181,8 +198,14 @@ class Data:
         line = str(line)
         by_date = self.shas_for(dates)
         pats, links, stops, days = [], [], [], []
-        for sha in sorted(set(by_date.values()), key=lambda s: min(d for d, x in by_date.items() if x == s)):
-            t = self.sha_tables(sha)
+        order = sorted(set(by_date.values()), key=lambda s: min(d for d, x in by_date.items() if x == s))
+        if len(order) > 1:
+            with ThreadPoolExecutor(max_workers=min(8, len(order))) as ex:
+                tables = dict(zip(order, ex.map(self.sha_tables, order)))
+        else:
+            tables = {s: self.sha_tables(s) for s in order}
+        for sha in order:
+            t = tables[sha]
             if t is None:
                 continue
             mine = [d for d, x in by_date.items() if x == sha]
@@ -216,8 +239,8 @@ class Data:
         ds = sorted(set(dates))
         if not ds:
             return pl.DataFrame()
-        frames = [f for m in months_between(ds[0], ds[-1])
-                  if (f := self.read_optional(derived(f"coverage/month={m}.parquet"))) is not None]
+        frames = [f for f in self.read_many([derived(f"coverage/month={m}.parquet") for m in months_between(ds[0], ds[-1])])
+                  if f is not None]
         if not frames:
             return pl.DataFrame()
         return pl.concat(frames).filter(pl.col("service_date").is_in(ds))
@@ -226,12 +249,8 @@ class Data:
         ds = sorted(set(dates))
         if not ds:
             return None
-        frames = []
-        for m in months_between(ds[0], ds[-1]):
-            rel = derived(f"{kind}/line={line}/month={m}.parquet")
-            f = self.read_optional(rel)
-            if f is not None:
-                frames.append(f.filter(pl.col("service_date").is_in(ds)))
+        rels = [derived(f"{kind}/line={line}/month={m}.parquet") for m in months_between(ds[0], ds[-1])]
+        frames = [f.filter(pl.col("service_date").is_in(ds)) for f in self.read_many(rels) if f is not None]
         return pl.concat(frames, how="diagonal_relaxed") if frames else None
 
     def placed(self, line: str, dates) -> pl.DataFrame | None:

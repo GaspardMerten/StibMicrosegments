@@ -177,6 +177,7 @@ def derive_month(data: Data, month: str, lines: list[str] | None = None, force_p
     pat = ensure_patterns(data, shas, registry, force=force_patterns)
     if len(registry) != n_keys:
         data.store.write_parquet(derived("linkkeys.parquet"), registry.table)
+    data.invalidate()  # per-feed tables may have been rewritten
     t_pat = time.time() - t0
 
     t1 = time.time()

@@ -17,7 +17,7 @@ WORKDIR /app
 
 COPY --from=microsegments-src / /tmp/microsegments/
 RUN if [ -f /tmp/microsegments/pyproject.toml ]; then \
-        SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MICROSEGMENTS="${MS_VERSION:-0.0.0}" pip install /tmp/microsegments; \
+        SETUPTOOLS_SCM_PRETEND_VERSION="${MS_VERSION}" pip install /tmp/microsegments; \
     else \
         apt-get update && apt-get install -y --no-install-recommends git && \
         pip install "$MICROSEGMENTS" && \
