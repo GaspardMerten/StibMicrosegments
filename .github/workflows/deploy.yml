@@ -32,8 +32,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e '.[dev]'
-      # API / derive tests skip when the package is missing (repo not public yet)
-      - run: pip install "git+https://github.com/GaspardMerten/microsegments" || echo "microsegments not installable, its tests skip"
+      - run: pip install "microsegments>=0.1.1"
       - run: pytest -q
 
   deploy:

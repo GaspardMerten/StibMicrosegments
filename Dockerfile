@@ -3,13 +3,13 @@
 # (python -m stibms.ingest ...); the ms-api service runs uvicorn on $PORT (default CMD below).
 #
 # The microsegments package comes from the `microsegments-src` stage. By default that stage is empty
-# and the package is installed from $MICROSEGMENTS (the GitHub repo). For a local build against a
+# and the package is installed from $MICROSEGMENTS (PyPI). For a local build against a
 # working copy, override the stage with a build context (scripts/docker-build.sh does this):
 #   docker build --build-context microsegments-src=/path/to/clean/copy -t stibms .
 FROM scratch AS microsegments-src
 
 FROM python:3.12-slim
-ARG MICROSEGMENTS="git+https://github.com/GaspardMerten/microsegments"
+ARG MICROSEGMENTS="microsegments>=0.1.1"
 ARG MS_VERSION=0.0.0
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
     MS_CACHE=/tmp/stibms-cache PORT=8080
