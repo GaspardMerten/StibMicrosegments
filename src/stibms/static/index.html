@@ -55,6 +55,12 @@ input[type=number] { width:80px; }
 .presets { display:flex; gap:6px; flex-wrap:wrap; }
 .presets button { background:transparent; border:1px solid var(--line); color:var(--ink-2); border-radius:999px; padding:3px 10px; font-size:13px; cursor:pointer; }
 .presets button:hover { color:var(--ink); border-color:var(--ink-3); }
+.presets button[aria-pressed=true] { color:var(--ink); border-color:var(--acc); background:var(--surface-2); }
+.tag { display:inline-block; font:500 11px/1.4 var(--mono); color:#c9b36a; border:1px solid #6b5d2e; border-radius:4px; padding:0 5px; margin:4px 4px 0 0; }
+.rk-ex { color:var(--ink-2); font-size:14px; margin:18px 0 0; }
+.rk-ex ul { margin:6px 0 0; padding-left:20px; }
+.rk-ex li { margin:3px 0; }
+.rkopts { display:flex; gap:8px 18px; flex-wrap:wrap; flex-basis:100%; }
 details.more { flex-basis:100%; border-top:1px solid var(--line); padding-top:10px; }
 details.more summary { cursor:pointer; color:var(--ink-2); font-size:14px; }
 details.more .opts { display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:10px; align-items:flex-end; }
@@ -137,20 +143,6 @@ details.more .opts { display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:10p
 .leaflet-container { font:13px var(--sans); }
 .method { color:var(--ink-3); font-size:13px; max-width:90ch; margin:18px 0 40px; }
 footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px solid var(--line); margin-top:20px; }
-/* ---------------------------------------------------------------- method page */
-.doc { max-width:72ch; padding:24px 0 10px; font-size:16px; line-height:1.65; color:var(--ink-2); }
-.doc h1 { font:800 clamp(30px, 4.5vw, 46px)/1.08 var(--serif); color:var(--ink); margin:8px 0 14px; letter-spacing:-.01em; }
-.doc h2 { font:700 23px/1.25 var(--serif); color:var(--ink); margin:34px 0 8px; }
-.doc p, .doc li { margin:0 0 12px; }
-.doc strong { color:var(--ink); }
-.doc .lead { font-size:18px; color:var(--ink-2); }
-.doc table { border-collapse:collapse; width:100%; font-size:15px; margin:8px 0 14px; }
-.doc th, .doc td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
-.doc th { font:500 11px/1.2 var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--ink-3); }
-.doc td:first-child { color:var(--ink); font-weight:600; white-space:nowrap; }
-@media (max-width:600px) { .doc td:first-child { white-space:normal; } }
-.doc .eg { background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--acc); border-radius:10px; padding:12px 16px; margin:12px 0 16px; }
-.doc .formula { font:500 14px/1.6 var(--mono); color:var(--ink); }
 [hidden] { display:none !important; }
 </style>
 </head>
@@ -162,7 +154,6 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
       <a href="/" data-tab="one">Une ligne</a>
       <a href="/comparer" data-tab="cmp">Comparer</a>
       <a href="/classement" data-tab="rank">Classement du réseau</a>
-      <a href="/methode" data-tab="method">Méthode</a>
     </nav>
   </div>
 </div>
@@ -173,7 +164,6 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
   <!-- ============================================================ line / compare -->
   <section id="lineview" hidden>
     <div class="bar">
-      <p class="lede" id="lede1">Chaque ligne est découpée en tronçons de 30 m. On compte combien de fois un véhicule y est vu (toutes les 20 s) : là où ce nombre dépasse celui du soir, les véhicules perdent du temps.</p>
       <form id="f" autocomplete="off">
         <div class="fld picker">
           <span>Ligne</span>
@@ -183,6 +173,7 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
             <div id="lgroups" role="listbox" aria-label="Lignes"></div>
           </div>
         </div>
+        <div class="fld" id="sensfld" hidden><span>Sens</span><div class="seg" id="sens" role="group" aria-label="Sens"></div></div>
         <div class="fld" id="single">
           <span>Période</span>
           <div class="dates"><input type="date" id="from" aria-label="Du" required><em>→</em><input type="date" id="to" aria-label="Au" required></div>
@@ -214,18 +205,21 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
   <!-- ============================================================ ranking -->
   <section id="rankview" hidden>
     <div class="bar">
-      <p class="lede">Les tronçons du réseau où les véhicules STIB perdent le plus de temps, toutes lignes confondues : temps perdu par passage par rapport au soir (20 h – 23 h), multiplié par le nombre de passages, de 6 h à 21 h. Les lignes qui partagent un tronçon s'additionnent.</p>
+      <p class="lede" id="rlede">Temps perdu entre les arrêts : les tronçons du réseau où les véhicules STIB perdent le plus de temps par rapport au soir (20 h – 23 h, circulation fluide), de 6 h à 21 h, toutes lignes confondues. Les lignes qui partagent un tronçon s'additionnent.</p>
       <form id="rf" autocomplete="off">
         <div class="fld"><span>Période</span>
           <div class="dates"><input type="date" id="rfrom" aria-label="Du"><em>→</em><input type="date" id="rto" aria-label="Au"></div></div>
         <div class="fld"><span>Mode</span><div class="seg" id="rmode"></div></div>
         <label class="fld"><span>Tronçons</span><select id="rtop"><option>20</option><option selected>50</option><option>100</option></select></label>
         <button class="go" id="rgo" type="submit">Classer</button>
+        <div class="rkopts">
+          <label class="check"><input type="checkbox" id="rstops"> Inclure les arrêts (de 30 m avant à 60 m après chaque arrêt)</label>
+          <label class="check"><input type="checkbox" id="rterm"> Inclure les terminus et points de régulation</label>
+        </div>
         <details class="more">
-          <summary>Options : jours, terminus</summary>
+          <summary>Options : jours</summary>
           <div class="opts">
             <div class="fld"><span>Jours</span><div class="dow" id="rdow"></div></div>
-            <label class="check"><input type="checkbox" id="rterm"> Inclure les tronçons de terminus (temps de régulation)</label>
           </div>
         </details>
       </form>
@@ -234,55 +228,7 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
     <div id="rout"></div>
   </section>
 
-  <!-- ============================================================ method -->
-  <section id="methodview" hidden>
-    <article class="doc">
-      <h1>Des observations aux secondes</h1>
-      <p class="lead">Comment ce site mesure, tronçon par tronçon, le temps que les trams, bus et métros de la STIB passent sur leur parcours, et où ils en perdent.</p>
-
-      <h2>Le principe</h2>
-      <p>La STIB publie la position de chacun de ses véhicules environ toutes les 20 secondes. Chaque ligne est découpée en <strong>micro-segments</strong> d'une trentaine de mètres, et chaque relevé place chaque véhicule dans l'un d'eux : c'est une <strong>observation</strong>.</p>
-      <p>Un véhicule qui reste T secondes dans un micro-segment y est relevé, en moyenne, T / 20 fois. Autrement dit, <strong>une observation correspond à environ 20 secondes de présence</strong>. Compter les observations, c'est donc mesurer du temps.</p>
-
-      <h2>Pourquoi c'est juste en moyenne, et grossier pour un seul passage</h2>
-      <p>Les relevés tombent à des instants sans rapport avec la position du véhicule : c'est un échantillonnage dans le temps. En moyenne, le nombre d'observations est exactement proportionnel au temps passé.</p>
-      <p>Pour un passage isolé, en revanche, la mesure est très grossière : à 30 km/h, un tram traverse 30 m en 3,6 s et il y est vu 0 ou 1 fois (0,18 fois en moyenne). C'est en cumulant des milliers de passages sur une période de plusieurs semaines que la moyenne devient précise. L'intervalle de confiance affiché, obtenu en tirant les jours au sort, indique cette précision.</p>
-
-      <h2>Trois mesures, en secondes</h2>
-      <table>
-        <thead><tr><th>Mesure</th><th>Calcul</th></tr></thead>
-        <tbody>
-          <tr><td>Temps par véhicule</td><td>observations ÷ passages × 20 s</td></tr>
-          <tr><td>Temps perdu par véhicule</td><td>(observations par passage à l'heure choisie − observations par passage le soir, de 20 h à 23 h, les mêmes jours) × 20 s</td></tr>
-          <tr><td>Temps perdu total</td><td>temps perdu par véhicule × nombre de passages, en secondes-véhicule par heure ou par jour</td></tr>
-        </tbody>
-      </table>
-      <div class="eg"><strong>Exemple.</strong> Tram 55, entre Waelhem et Verboekhoven en direction de Rogier, l'après-midi : chaque tram y est vu 2,7 fois de plus que le soir, soit environ <strong>54 secondes perdues par tram</strong>.</div>
-      <p>Le soir sert de référence parce que la circulation y est fluide. Les couleurs de la carte et de la matrice suivent une échelle fixe, la même pour toutes les lignes et toutes les périodes : on peut comparer directement deux lignes ou deux mois.</p>
-      <p>Le <a href="/classement">classement du réseau</a> additionne ce temps perdu, de 6 h à 21 h, sur chaque tronçon entre deux arrêts, puis sur toutes les lignes qui l'empruntent. La <a href="/comparer">comparaison de périodes</a> met en regard le temps par véhicule avant et après, micro-segment par micro-segment.</p>
-
-      <h2>Les trous dans le flux</h2>
-      <p>On divise toujours par les relevés réellement reçus, pas par les 180 relevés théoriques d'une heure. Une heure reçue à moins de 80 %, ou pendant laquelle le flux est resté figé plus de cinq minutes, est écartée. Un jour dont plus d'un quart des heures de 6 h à 21 h sont écartées l'est aussi, de même que les jours où la ligne manque dans le flux publié par la STIB. Les jours fériés sont exclus par défaut. Le calendrier de couverture, sous chaque analyse, montre les jours retenus et écartés.</p>
-      <p>Le facteur de 20 s est l'intervalle médian réel du flux. Un flux GPS plus dense serait ramené sur une grille de 20 s par véhicule.</p>
-
-      <h2>Validation</h2>
-      <p>Pour chaque inter-arrêt, la somme des micro-segments est comparée au temps mesuré indépendamment entre les deux arrêts, à partir des horaires de passage publiés par la STIB. L'écart est de <strong>±5 %</strong> sur la plupart des inter-arrêts et de ±15 % au pire (tram 55, février à mai 2025).</p>
-
-      <h2>Limites</h2>
-      <ul>
-        <li>C'est un ordre de grandeur, pas un chronométrage : l'intervalle réel entre deux relevés varie de 18 à 22 s.</li>
-        <li>La position publiée peut avoir quelques secondes de retard : le temps est alors légèrement décalé vers l'aval, mais le total ne change pas.</li>
-        <li>Le temps perdu est relatif au soir : un retard présent aussi le soir, comme un feu mal réglé, n'apparaît pas dans l'écart au soir. C'est pourquoi l'écart au niveau habituel de la ligne est affiché à côté.</li>
-        <li>Métro : le flux place les rames presque toujours en station ; les passages viennent alors des horaires de passage, jamais des seules positions.</li>
-        <li>Une hausse peut venir d'un changement d'horaire plutôt que de la voirie : la comparaison signale les tronçons dont la fréquence a changé de plus de 20 %.</li>
-      </ul>
-
-      <h2>Code et données</h2>
-      <p>Les calculs sont faits par <a href="https://github.com/GaspardMerten/microsegments">microsegments</a>, un paquet Python open source (<a href="https://pypi.org/project/microsegments/">PyPI</a>), utilisable avec n'importe quel GTFS et flux de positions. Les données viennent du flux STIB <em>vehicle-distance</em> et des horaires de passage, via <a href="https://mobilitytwin.brussels">MobilityTwin.Brussels</a>. Les résultats sont aussi disponibles par l'<a href="/api/docs">API</a> (JSON, CSV, Parquet).</p>
-    </article>
-  </section>
-
-  <footer>Données : STIB vehicle-distance et punctuality via <a href="https://mobilitytwin.brussels">MobilityTwin.Brussels</a>, GTFS STIB. <a href="/methode">Méthode</a> · paquet open source <a href="https://github.com/GaspardMerten/microsegments">microsegments</a> · <a href="/api/docs">API</a>.</footer>
+  <footer>Données : STIB vehicle-distance et punctuality via <a href="https://mobilitytwin.brussels">MobilityTwin.Brussels</a>, GTFS STIB. Paquet open source <a href="https://github.com/GaspardMerten/microsegments">microsegments</a> · <a href="/api/docs">API</a>.</footer>
 </main>
 
 <script>
@@ -389,12 +335,20 @@ function presets() {
   if (ms.length >= 3) opts.push(["3 derniers mois", ms[ms.length - 3] + "-01", monthEnd(ms[ms.length - 1])]);
   if (ms.length >= 6) opts.push(["6 derniers mois", ms[ms.length - 6] + "-01", monthEnd(ms[ms.length - 1])]);
   opts.push(["30 derniers jours", addDays(av.to, -29), av.to]);
+  // two shortcuts with the same dates: keep the first
+  for (let i = opts.length - 1; i > 0; i--) if (opts.slice(0, i).some(o => o[1] === opts[i][1] && o[2] === opts[i][2])) opts.splice(i, 1);
   $("presets").innerHTML = `<span class="lbl" style="align-self:center">Raccourcis</span>` +
-    opts.map(([t, a, b]) => `<button type="button" data-a="${a < av.from ? av.from : a}" data-b="${b}">${t}</button>`).join("");
+    opts.map(([t, a, b]) => `<button type="button" data-a="${a < av.from ? av.from : a}" data-b="${b}" aria-pressed="false">${t}</button>`).join("");
+  presetState();
 }
+// a shortcut is shown as active only while the dates are exactly its dates
+function presetState() {
+  $("presets").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.a === $("from").value && b.dataset.b === $("to").value)));
+}
+["from", "to"].forEach(id => $(id).addEventListener("input", presetState));
 $("presets").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
-  $("from").value = b.dataset.a; $("to").value = b.dataset.b; runLine();
+  $("from").value = b.dataset.a; $("to").value = b.dataset.b; presetState(); b.blur(); runLine();
 });
 $("linebtn").addEventListener("click", () => {
   const open = $("panel").hidden;
@@ -417,14 +371,10 @@ document.addEventListener("click", e => { if (!e.target.closest(".picker")) clos
 function setTab(t, push) {
   TAB = t;
   document.querySelectorAll("nav a").forEach(a => { if (a.dataset.tab === t) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
-  $("lineview").hidden = t === "rank" || t === "method"; $("rankview").hidden = t !== "rank"; $("methodview").hidden = t !== "method";
-  $("pending").style.display = t === "method" ? "none" : "";
+  $("lineview").hidden = t === "rank"; $("rankview").hidden = t !== "rank";
   $("single").hidden = t !== "one"; $("double").hidden = t !== "cmp";
   $("go").textContent = t === "cmp" ? "Comparer" : "Afficher";
-  $("lede1").textContent = t === "cmp"
-    ? "Deux périodes comparées tronçon par tronçon : où les véhicules passent-ils plus vite ou plus lentement qu'avant ? La comparaison porte sur le temps passé par véhicule, quel que soit le nombre de passages."
-    : "Chaque ligne est découpée en tronçons de 30 m. On compte combien de fois un véhicule y est vu (toutes les 20 s) : là où ce nombre dépasse celui du soir, les véhicules perdent du temps.";
-  document.title = {one: "Une ligne", cmp: "Comparer deux périodes", rank: "Classement du réseau", method: "Méthode"}[t] + " · STIB micro-segments";
+  document.title = {one: "Une ligne", cmp: "Comparer deux périodes", rank: "Classement du réseau"}[t] + " · STIB micro-segments";
   presets();
 }
 document.querySelectorAll("nav a").forEach(a => a.addEventListener("click", e => {
@@ -435,7 +385,6 @@ document.querySelectorAll("nav a").forEach(a => a.addEventListener("click", e =>
   history.pushState(null, "", a.getAttribute("href") + ((t === "one" || t === "cmp") && line ? "?line=" + encodeURIComponent(line) : ""));
   setTab(t);
   window.scrollTo(0, 0);
-  if (t === "method") return;
   if (t === "rank") { $("rfrom").value = ""; $("rto").value = ""; runRank(); } else if (line && lineOf(line) && lineOf(line).available) runLine();
 }));
 window.addEventListener("popstate", () => boot(false));
@@ -491,13 +440,32 @@ function covNotes(sum, from, to) {
   return notes.join("");
 }
 
+// ---------------------------------------------------------------- direction (Sens), global
+// The analysis page in the frame tells its directions ({ms: "dirs"}); this control drives it with
+// {ms: "dir"} (no reload: both directions are already loaded) and keeps &dir= in the URL.
+let DIR = null, FRAME = null;
+function drawSens(dirs, cur) {
+  if (!dirs || dirs.length < 2) { $("sensfld").hidden = true; return; }
+  $("sensfld").hidden = false;
+  $("sens").innerHTML = dirs.map(d => `<button type="button" data-dir="${d.dir}" aria-pressed="${d.dir === cur}">vers ${esc(d.to)}</button>`).join("");
+}
+function setDir(d, send) {
+  DIR = d;
+  $("sens").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.dir === d)));
+  const u = new URLSearchParams(location.search); u.set("dir", d);
+  history.replaceState(null, "", location.pathname + "?" + u);
+  if (send && FRAME && FRAME.contentWindow) FRAME.contentWindow.postMessage({ms: "dir", dir: d}, "*");
+}
+$("sens").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setDir(+b.dataset.dir, true); });
+
 // ---------------------------------------------------------------- one line / two periods
 let RUN = 0;
 async function runLine() {
   const line = $("linebtn").dataset.line;
   if (!line) return;
   const p = lineParams();
-  history.replaceState(null, "", location.pathname + "?" + p);
+  const pu = new URLSearchParams(p); if (DIR != null) pu.set("dir", DIR);
+  history.replaceState(null, "", location.pathname + "?" + pu);
   const me = ++RUN;
   $("go").disabled = true; $("notes").innerHTML = "";
   const elapsed = busy($("status"), TAB === "cmp" ? `Comparaison de la ligne ${esc(line)}` : `Calcul de la ligne ${esc(line)}`,
@@ -533,10 +501,17 @@ function showFrame(p, me, elapsed) {
   return new Promise(resolve => {
     $("view").innerHTML = `<iframe src="/view?${p}" scrolling="no" allowfullscreen title="Analyse de la ligne ${esc(p.get("line"))}"></iframe>`;
     const fr = $("view").querySelector("iframe");
+    FRAME = fr;
     let settled = false;
     const onMsg = ev => {
       if (ev.source !== fr.contentWindow || !ev.data || !ev.data.ms) return;
       if (ev.data.ms === "height") { fr.style.height = ev.data.h + "px"; return; }   // the frame takes its page's height
+      if (ev.data.ms === "dirs") {
+        const ds = ev.data.dirs || [], want = ds.some(d => d.dir === DIR) ? DIR : ev.data.dir;
+        drawSens(ds, want);
+        if (want != null) setDir(want, want !== ev.data.dir);
+        return;
+      }
       if (settled) return;
       settled = true;
       if (me !== RUN) return resolve();
@@ -565,6 +540,7 @@ function rankParams() {
   p.set("dow", dowGet($("rdow")));
   p.set("mode", rmode()); p.set("top", $("rtop").value);
   if ($("rterm").checked) p.set("terminus", "true");
+  if ($("rstops").checked) p.set("stops", "true");
   return p;
 }
 let RMAP = null, RLAYERS = [], RK = 0;
@@ -573,7 +549,7 @@ async function runRank() {
   history.replaceState(null, "", "/classement?" + p);
   const me = ++RK;
   $("rgo").disabled = true;
-  busy($("rstatus"), "Classement en cours", "un nouveau choix de période demande de calculer chaque ligne : comptez quelques minutes");
+  busy($("rstatus"), "Classement en cours", "");
   try {
     for (;;) {
       const r = await getJSON("/api/ranking?" + p);
@@ -596,6 +572,7 @@ async function runRank() {
 }
 $("rf").addEventListener("submit", e => { e.preventDefault(); runRank(); });
 $("rterm").addEventListener("change", runRank);
+$("rstops").addEventListener("change", runRank);
 $("rtop").addEventListener("change", runRank);
 
 function heat(t) {
@@ -604,10 +581,16 @@ function heat(t) {
   const i = Math.min(Math.floor(t), s.length - 2), u = t - i;
   return `rgb(${s[i].map((a, k) => Math.round(a + (s[i + 1][k] - a) * u)).join(",")})`;
 }
+const RREASON = {terminus: "terminus", short_terminus: "terminus partiel", holding: "point de régulation"};
+const RREASON_LONG = {terminus: "terminus de la ligne (temps de battement)", short_terminus: "terminus partiel : des véhicules y stationnent plus de 3 min",
+  holding: "point de régulation : des véhicules y attendent plus de 3 min"};
+const PEAK = {am: "surtout le matin", pm: "surtout l'après-midi", day: "toute la journée"};
 function drawRank(R) {
-  const q = R.query, S = R.stretches || [];
+  const q = R.query, S = R.stretches || [], stopsIn = !!q.stops;
   if (!$("rfrom").value) $("rfrom").value = q.first;
   if (!$("rto").value) $("rto").value = q.last;
+  $("rlede").textContent = (stopsIn ? "Temps perdu entre les arrêts et aux arrêts" : "Temps perdu entre les arrêts")
+    + " : les tronçons du réseau où les véhicules STIB perdent le plus de temps par rapport au soir (20 h – 23 h, circulation fluide), de 6 h à 21 h, toutes lignes confondues. Les lignes qui partagent un tronçon s'additionnent.";
   const daysTxt = q.dow.length === 5 && q.dow.join() === "0,1,2,3,4" ? "jours ouvrables" : "jours " + q.dow.map(d => DOW[d]).join(", ");
   const modeTxt = {all: "toutes les lignes", tram: "les trams", bus: "les bus", metro: "le métro"}[q.mode];
   if (!S.length) {
@@ -616,9 +599,11 @@ function drawRank(R) {
   }
   const top = S.reduce((a, s) => a + Math.max(0, s.veh_h_day), 0);
   const max = Math.max(...S.map(s => s.veh_h_day));
+  const lb = x => badge(lineOf(x.line) || (R.lines || []).find(y => y.line === x.line) || {line: x.line});
+  const ex = R.excluded || {n: 0, top: []};
   $("rout").innerHTML = `
     <p class="rk-sum">Du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b>, ${daysTxt}, ${modeTxt} (${R.lines_used} lignes) :
-      les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> par rapport au soir,
+      les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> ${stopsIn ? "" : "entre les arrêts "}par rapport au soir,
       soit environ <b>${nf(top * R.days_per_year / 1000, 1)} milliers d'heures par an</b>.</p>
     <div class="tiles">
       <div class="tile"><b>${nf(S[0].veh_h_day, 1)} h</b><span>par jour sur le tronçon n° 1, ${esc(S[0].from)} → ${esc(S[0].to)}</span></div>
@@ -632,13 +617,15 @@ function drawRank(R) {
       <tbody>${S.map((s, i) => `<tr data-i="${i}">
         <td class="rk">${s.rank}</td>
         <td class="str"><b>${esc(s.from)} → ${esc(s.to)}</b>
-          <small>${nf(s.len_m)} m · ${nf(s.passages_day)} passages / jour · réf. de ligne : ${nf(s.veh_h_day_line, 1)} h / jour</small>
-          <div class="lines">${s.lines.map(x => `<a href="/?line=${encodeURIComponent(x.line)}&from=${q.first}&to=${q.last}&dow=${q.dow.join(",")}" title="Ligne ${esc(x.line)} : ${nf(x.veh_h_day, 1)} h / jour${x.peak_hour != null ? ", surtout vers " + x.peak_hour + " h" : ""}">${badge(lineOf(x.line) || (R.lines || []).find(y => y.line === x.line) || {line: x.line})}</a>`).join("")}</div>
+          <small>${nf(s.len_m)} m · ${nf(s.passages_day)} passages / jour · entre les arrêts ${nf(s.veh_h_day_run, 1)} h, aux arrêts ${nf(s.veh_h_day_stop, 1)} h${stopsIn ? "" : " (non compté)"}</small>
+          <div class="lines">${s.lines.map(x => `<a href="/?line=${encodeURIComponent(x.line)}&from=${q.first}&to=${q.last}&dow=${q.dow.join(",")}" title="Ligne ${esc(x.line)} : ${nf(x.veh_h_day, 1)} h / jour, ${PEAK[x.peak] || ""}${x.reason ? " · " + RREASON_LONG[x.reason] : ""}">${lb(x)}</a>`).join("")}</div>
+          ${(s.reasons || []).map(r => `<span class="tag" title="${esc(RREASON_LONG[r] || r)}">${esc(RREASON[r] || r)}</span>`).join("")}
           <div class="bar-in" style="width:${Math.max(2, 100 * s.veh_h_day / max)}%"></div></td>
         <td class="n">${nf(s.veh_h_day, 1)}</td><td class="n">${nf(s.veh_h_year)}</td><td class="n">${nf(s.s_per_passage, 0)}</td></tr>`).join("")}</tbody></table></div>
     </div>
-    <p class="method">Méthode : pour chaque ligne, chaque tronçon de 30 m compte les véhicules vus toutes les 20 s, rapportés au nombre de passages. L'excès par rapport au soir (20 h – 23 h, même jours) multiplié par les passages de 6 h à 21 h donne le temps perdu par jour ; les tronçons entre deux arrêts additionnent leurs micro-segments, puis les lignes qui empruntent le même tronçon (même paire d'arrêts, même tracé) s'additionnent. « Réf. de ligne » : le même calcul par rapport au niveau habituel de la ligne entre arrêts, plutôt qu'au soir. Les jours fériés et les jours où le flux est incomplet sont écartés. Par an : × ${R.days_per_year} jours (ordre de grandeur).
-    ${R.computed_at ? `Calculé le ${fdate(R.computed_at.slice(0, 10))}.` : ""}</p>`;
+    ${ex.n ? `<div class="rk-ex"><b>${nf(ex.n)} tronçon${ex.n > 1 ? "s" : ""} laissé${ex.n > 1 ? "s" : ""} de côté</b> (${nf(ex.veh_h_day, 0)} h-véh. / jour) : terminus et points de régulation, où les véhicules attendent volontairement (battement, régulation de l'horaire) et non à cause de la circulation. Cochez « Inclure les terminus et points de régulation » pour les voir dans le classement. Les principaux :
+      <ul>${ex.top.map(x => `<li>${esc(x.from)} → ${esc(x.to)} (${x.lines.map(y => esc(y.line)).join(", ")}) : ${nf(x.veh_h_day, 1)} h / jour, ${nf(x.s_per_passage, 0)} s par passage · ${x.reasons.map(r => esc(RREASON_LONG[r] || r)).join(" ; ")}</li>`).join("")}</ul></div>` : ""}
+    <p class="method">Toutes les 20 secondes, la STIB publie la position de chaque véhicule. Chaque ligne est découpée en tronçons de 30 m ; on compte combien de fois un véhicule y est vu (1 observation ≈ 20 s passées là), par passage. Le temps en plus par rapport au soir (20 h – 23 h, mêmes jours), multiplié par les passages de 6 h à 21 h, donne le temps perdu par jour. ${stopsIn ? "Les zones d'arrêt (30 m avant à 60 m après chaque arrêt) sont comptées." : "Les zones d'arrêt (30 m avant à 60 m après chaque arrêt) ne sont pas comptées : on y attend aussi des voyageurs."} Les jours fériés et les jours où le flux est incomplet sont écartés. Par an : × ${R.days_per_year} jours (ordre de grandeur).</p>`;
   if (RMAP) { RMAP.remove(); RMAP = null; }
   RMAP = L.map("rkmap", {scrollWheelZoom: false});
   L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
@@ -646,15 +633,16 @@ function drawRank(R) {
   RLAYERS = [];
   const all = [];
   [...S].reverse().forEach(s => {
-    if (!s.c || s.c.length < 2) return;
-    const ll = s.c.map(([x, y]) => [y, x]);
-    const pl = L.polyline(ll, {color: heat(s.veh_h_day / max), weight: 4 + 6 * s.veh_h_day / max, opacity: .95})
-      .bindTooltip(`<b>${s.rank}. ${esc(s.from)} → ${esc(s.to)}</b><br>${nf(s.veh_h_day, 1)} h-véh. / jour · lignes ${s.lines.map(x => esc(x.line)).join(", ")}`, {sticky: true})
+    const geos = [s.c, ...(s.cs || [])].filter(c => c && c.length >= 2);
+    if (!geos.length) return;
+    const lls = geos.map(c => c.map(([x, y]) => [y, x]));
+    const pl = L.polyline(lls, {color: heat(s.veh_h_day / max), weight: 4 + 6 * s.veh_h_day / max, opacity: .95})
+      .bindTooltip(`<b>${s.rank}. ${esc(s.from)} → ${esc(s.to)}</b><br>${nf(s.veh_h_day, 1)} h-véh. / jour · lignes ${s.lines.map(x => esc(x.line)).join(", ")}<br>entre les arrêts ${nf(s.veh_h_day_run, 1)} h · aux arrêts ${nf(s.veh_h_day_stop, 1)} h`, {sticky: true})
       .addTo(RMAP);
     pl.on("click", () => selectRow(s.rank - 1, false));
     RLAYERS[s.rank - 1] = pl; all.push(pl);
     if (s.rank <= 15) {
-      const mid = ll[Math.floor(ll.length / 2)];
+      const ll = lls[0], mid = ll[Math.floor(ll.length / 2)];
       L.marker(mid, {icon: L.divIcon({className: "rkicon", html: String(s.rank)})}).addTo(RMAP).on("click", () => selectRow(s.rank - 1, false));
     }
   });
@@ -680,7 +668,8 @@ function pendingBanner() {
 }
 async function boot(first) {
   const path = location.pathname.replace(/\/+$/, "");
-  const tab = path === "/comparer" ? "cmp" : path === "/classement" ? "rank" : path === "/methode" ? "method" : "one";
+  if (path === "/methode") history.replaceState(null, "", "/");      // the method page is gone
+  const tab = path === "/comparer" ? "cmp" : path === "/classement" ? "rank" : "one";
   setTab(tab);
   const u = new URLSearchParams(location.search);
   if (first) {
@@ -690,7 +679,6 @@ async function boot(first) {
     } catch (e) { done($("status"), "Impossible de charger les lignes : " + esc(e.message), true); return; }
     pendingBanner();
   }
-  if (tab === "method") return;
   if (tab === "rank") {
     for (const [k, id] of [["from", "rfrom"], ["to", "rto"]]) $(id).value = u.get(k) || "";
     dowSet($("rdow"), u.get("dow"));
@@ -698,6 +686,7 @@ async function boot(first) {
     $("rmode").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.mode === m)));
     if (u.get("top")) $("rtop").value = u.get("top");
     $("rterm").checked = u.get("terminus") === "true";
+    $("rstops").checked = u.get("stops") === "true";
     for (const id of ["rfrom", "rto"]) { $(id).min = INFO.ingested.from || ""; $(id).max = INFO.ingested.to || ""; }
     return runRank();
   }
@@ -707,6 +696,8 @@ async function boot(first) {
   setLine(want, false);
   if (u.get("from")) $("from").value = u.get("from");
   if (u.get("to")) $("to").value = u.get("to");
+  presetState();
+  DIR = u.get("dir") != null && u.get("dir") !== "" ? +u.get("dir") : null;
   if (u.get("a")) { const [x, y] = u.get("a").split(".."); $("a1").value = x; $("a2").value = y; }
   if (u.get("b")) { const [x, y] = u.get("b").split(".."); $("b1").value = x; $("b2").value = y; }
   dowSet($("dow"), u.get("dow"));

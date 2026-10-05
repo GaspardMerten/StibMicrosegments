@@ -3,6 +3,7 @@ per line (layout in ``stibms.data``).
 
     python -m stibms.derive --month 2025-03 [--lines all|55,71] [--bucket gs://b | --local DIR]
     python -m stibms.derive --from 2024-04 --to 2026-10 --coverage-only     # coverage files only
+    python -m stibms.derive --from 2024-04 --to 2026-10 --linkcube-only     # ranking cubes only
 
 Steps for a month M (dates = ingested service dates of M):
 
@@ -15,6 +16,8 @@ Steps for a month M (dates = ingested service dates of M):
    network of their date (``microsegments.locate.place``), then passages are counted from the tracks
    and the punctuality stop events (``microsegments.tracks.passages``). Feed lengths and terminus
    aliases are learned over the whole month.
+4. **Link cube** of the month, all lines (``linkcube/month=M/``, see ``stibms.linkcube``): what the
+   network ranking sums for any window, so the API never runs the per-line analyses for it.
 
 Segment length, phase and stop zone are not fixed here: the API segments on request.
 Re-running a month rewrites its files (idempotent). Run months one at a time: the link-key registry
@@ -204,13 +207,18 @@ def derive_month(data: Data, month: str, lines: list[str] | None = None, force_p
                 failed[line] = repr(e)[:300]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    t3 = time.time()
+    data.invalidate()
+    from . import linkcube
+    cube = linkcube.write_month(data, month, lines)
+    t_cube = time.time() - t3
     report = {
         "month": month, "algo": ALGO_VERSION, "microsegments": ms.version(),
         "dates": [d.isoformat() for d in dates], "lines": len(per_line), "failed": failed,
         "seconds": {"patterns": round(t_pat, 1), "coverage": round(t_cov, 1), "split": round(t_split, 1),
-                    "lines": round(sum(r.get("seconds", 0) for r in per_line), 1),
+                    "lines": round(sum(r.get("seconds", 0) for r in per_line), 1), "linkcube": round(t_cube, 1),
                     "total": round(time.time() - t0, 1)},
-        "patterns": pat, "per_line": per_line,
+        "patterns": pat, "per_line": per_line, "linkcube": {k: cube[k] for k in ("rows", "failed")},
         "written_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
     }
     data.store.write_json(derived(f"_SUCCESS/month={month}.json"), report)
@@ -242,6 +250,25 @@ def rewrite_coverage(data: Data, month: str) -> dict:
     return {"month": month, "lines": rep.get("lines"), "failed": {}, "seconds": round(time.time() - t0, 1)}
 
 
+def rewrite_linkcube(data: Data, month: str) -> dict:
+    """Rebuild only the month's link cube from its placed / passages files (e.g. after a change of
+    ``stibms.linkcube``). The derive report's ``written_at`` is kept: line analyses do not read the
+    cube, so their caches stay valid (the ranking does not cache a window without cubes)."""
+    from . import linkcube
+    rel = derived(f"_SUCCESS/month={month}.json")
+    try:
+        rep = data.store.read_json(rel)
+    except FileNotFoundError:
+        log.warning("%s: not derived, no link cube", month)
+        return {"month": month, "lines": 0, "failed": {}}
+    out = linkcube.write_month(data, month)
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    rep.update({"linkcube_rewritten_at": now, "linkcube": {k: out[k] for k in ("rows", "failed")}})
+    data.store.write_json(rel, rep)
+    data.invalidate()
+    return {"month": month, "lines": out["lines"], "failed": out["failed"], "seconds": out["seconds"]}
+
+
 def months_for(first: dt.date, last: dt.date) -> list[str]:
     from .data import months_between
     return months_between(first, last)
@@ -260,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--force-patterns", action="store_true", help="rebuild the per-feed networks")
     ap.add_argument("--coverage-only", action="store_true",
                     help="only recompute the coverage files of the months (fast; e.g. after a package change)")
+    ap.add_argument("--linkcube-only", action="store_true",
+                    help="only rebuild the ranking link cubes from the derived placed / passages files")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     root = args.local or args.bucket or os.environ.get("MS_BUCKET")
@@ -278,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
     for m in months:
         if args.coverage_only:
             rep = rewrite_coverage(data, m)
+        elif args.linkcube_only:
+            rep = rewrite_linkcube(data, m)
         else:
             rep = derive_month(data, m, lines, force_patterns=args.force_patterns)
         print(json.dumps({k: rep.get(k) for k in ("month", "lines", "failed", "seconds")}, default=str))

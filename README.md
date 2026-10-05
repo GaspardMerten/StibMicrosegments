@@ -54,25 +54,28 @@ MS_BUCKET=data/ms .venv/bin/uvicorn stibms.api:app --port 8080     # or MS_BUCKE
 ```
 
 Three pages share `static/index.html`: `/` (one line), `/comparer` (two periods) and `/classement`
-(network ranking); the URL query string carries the state. The analysis itself is the package's
+(network ranking); the URL query string carries the state (`/methode` redirects to `/`). The analysis itself is the package's
 `html/template.html`, fed by `/api/analysis` or `/api/compare`. Endpoints are listed in
 `src/stibms/api.py`: `/api/health`, `/api/status`, `/api/lines`, `/api/coverage`, `/api/versions`,
 `/api/analysis[.csv|.parquet]`, `/api/hotspots[.csv|.parquet]`, `/api/tune`, `/api/compare`,
 `/api/ranking`. Results are cached in process and under `results/v{ALGO}/` in the bucket.
 
-The ranking (`src/stibms/ranking.py`) sums, per stretch (`link_key`, shared by the lines on the same
-stop pair and track), the vehicle time lost per day over the evening. The nightly ingest precomputes
-the default window (last complete month, weekdays); a custom window is computed a few lines
-per request (`/api/ranking` answers 202 with progress until done; the page polls).
+The ranking (`src/stibms/ranking.py`) never runs the line analyses: the derive writes, per month, a
+small link cube for all lines (`derived/v1/linkcube/month=M/`, see `src/stibms/linkcube.py`:
+observations and passages per line, day and stop pair, by hour band and zone, plus the
+observations of vehicles standing still for 3 minutes or more). Any window is a sum over those rows
+(< 1 s). By default it counts the time lost between stops only (`stops=true` adds the stop zones),
+leaves out termini and regulation points (`terminus=true` keeps them; they are listed with their
+reason) and merges platforms of the same stops into one stretch.
 
 ```bash
-.venv/bin/python -m stibms.ranking --default                                  # what the nightly does
 .venv/bin/python -m stibms.ranking --from 2026-07-01 --to 2026-09-30 --mode tram
+.venv/bin/python -m stibms.derive --from 2024-04 --to 2026-09 --linkcube-only   # rebuild the cubes
 ```
 
 ## Image
 
-The image installs `microsegments>=0.2.2,<0.3` from PyPI. To build against a local working copy
+The image installs `microsegments>=0.2.4,<0.3` from PyPI. To build against a local working copy
 instead (staged without `.git` / `.venv`, passed as a named build context):
 
 ```bash

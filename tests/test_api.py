@@ -178,23 +178,37 @@ def test_compare(client):
     assert client.get("/api/compare?line=S1&a=2024-01-01..2024-01-05&b=2025-05-30..2025-06-02").status_code == 404
 
 
-def test_ranking(client, monkeypatch):
-    monkeypatch.setenv("MS_RANK_BUDGET", "0")      # one line per poll: exercise the progress path
+def test_ranking(client):
     q = "/api/ranking?from=2025-05-26&to=2025-06-02&dow=0-6&top=10"
     r = client.get(q)
-    for _ in range(5):
-        if r.status_code == 200:
-            break
-        assert r.status_code == 202 and r.json()["status"] == "running"
-        r = client.get(q)
     assert r.status_code == 200, r.text
     res = r.json()
-    assert res["status"] == "done" and res["lines_used"] == 1
+    assert res["status"] == "done" and res["lines_used"] == 1 and res["zones"] == "running"
     s = res["stretches"]
     assert 0 < len(s) <= 10 and s[0]["rank"] == 1
     assert s[0]["veh_h_day"] >= s[-1]["veh_h_day"]
     assert s[0]["lines"][0]["line"] == "S1" and s[0]["c"]
+    assert {"veh_h_day_run", "veh_h_day_stop", "reasons", "link_keys"} <= set(s[0])
+    assert "excluded" in res
+    both = client.get(q + "&stops=true&terminus=true").json()
+    assert both["zones"] == "all" and both["excluded"]["n"] == 0
     assert client.get(q.replace("top=10", "top=10&mode=metro")).json()["lines_used"] == 0
+
+
+def test_linkcube_written(derived_root):
+    c = pl.read_parquet(derived_root / derived("linkcube/month=2025-05/cube.parquet"))
+    assert {"line", "service_date", "link_key", "o_day_r", "o_day_s", "l_day_r", "p_day", "p_eve"} <= set(c.columns)
+    assert c["line"].unique().to_list() == ["S1"] and c["p_day"].sum() > 0
+    lk = pl.read_parquet(derived_root / derived("linkcube/month=2025-05/links.parquet"))
+    assert set(lk["term"].unique().to_list()) <= {0, 1, 2} and (lk["term"] == 1).any()
+
+
+def test_regulation_overlap():
+    from stibms.ranking import overlap
+    a = [[4.35, 50.85], [4.352, 50.85]]                 # ~140 m east-west
+    b = [[4.3505, 50.85005], [4.352, 50.85005]]         # same street, 5 m north, shorter
+    c = [[4.35, 50.852], [4.352, 50.852]]               # 220 m north
+    assert overlap(a, b) == 1.0 and overlap(a, c) == 0.0
 
 
 def test_status_lines_default_and_not_derived(client, derived_root):

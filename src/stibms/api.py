@@ -15,13 +15,14 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
     GET /api/tune?...&lengths=15,20,30,40,50  segment-length criteria (slow, cached)
     GET /api/compare?line&a=D1..D2&b=D3..D4&dow&holidays&seg&...
                                               period B's contract + the ``compare`` section
-    GET /api/ranking?from&to&dow&holidays&mode=all|tram|bus|metro&top=50
+    GET /api/ranking?from&to&dow&holidays&mode=all|tram|bus|metro&top=50&stops=false&terminus=false
                                               costliest stretches of the network (vehicle-hours lost
-                                              per day); default window when from/to are omitted.
-                                              Custom windows are computed over several polls:
-                                              {"status": "running", "done", "total"} until done.
+                                              per day, between stops unless stops=true; termini and
+                                              regulation points left out unless terminus=true);
+                                              default window when from/to are omitted. Sums the
+                                              monthly link cubes: < 1 s for any window.
     GET /api/status                           ingested range, derived months, months pending
-    GET /, /comparer, /classement, /methode   the page (one line / two periods / network ranking / method)
+    GET /, /comparer, /classement             the page (one line / two periods / network ranking); /methode -> /
     GET /view?<analysis or compare params>    the package page fed by /api/analysis or /api/compare
 
 Results are cached in process (LRU) and in the bucket (``results/v{ALGO}/<hash>.json.gz``), keyed
@@ -29,6 +30,9 @@ by the parameters, ALGO_VERSION, the package version and the data stamp (last in
 derive time of the months involved), so a nightly ingest invalidates only what it touches.
 Periods that are fully past and ingested are sent with ``Cache-Control: max-age=86400``.
 Heavy imports (polars, microsegments) happen on the first data request, not at start-up.
+CPU-heavy work (an analysis or comparison not in cache) runs one at a time per instance (``HEAVY``),
+so a burst of new requests cannot starve the cheap ones (health, lines, cached results, ranking).
+The line page hides the package's hotspots (``show_hotspots: false``), so they are not computed.
 """
 from __future__ import annotations
 
@@ -50,6 +54,28 @@ log = logging.getLogger("stibms.api")
 STATIC = Path(__file__).parent / "static"
 LONG_CACHE = "public, max-age=3600"   # results of past periods; short enough for package upgrades
 SHORT_CACHE = "public, max-age=300"
+
+# One cache-missing analysis / comparison at a time per instance (2 vCPU): the others wait their turn
+# instead of all slowing down together, and cheap endpoints keep a free core.
+_heavy_sem = threading.BoundedSemaphore(int(os.environ.get("MS_HEAVY", "1")))
+_heavy_tls = threading.local()
+
+
+class _Heavy:
+    """Re-entrant per thread (a cached analysis computes its run inside the same guard)."""
+    def __enter__(self):
+        d = getattr(_heavy_tls, "depth", 0)
+        if d == 0:
+            _heavy_sem.acquire()
+        _heavy_tls.depth = d + 1
+
+    def __exit__(self, *exc):
+        _heavy_tls.depth -= 1
+        if _heavy_tls.depth == 0:
+            _heavy_sem.release()
+
+
+HEAVY = _Heavy()
 
 app = FastAPI(title="STIB microsegments", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
@@ -213,9 +239,10 @@ def _cached_json(kind: str, q, compute, request: Request) -> Response:
                     gz = None
                 if gz is None:
                     src = "computed"
-                    t = time.time()
-                    obj = compute()
-                    gz = gzip.compress(json.dumps(obj, separators=(",", ":"), default=str).encode(), 6)
+                    with HEAVY:
+                        t = time.time()
+                        obj = compute()
+                        gz = gzip.compress(json.dumps(obj, separators=(",", ":"), default=str).encode(), 6)
                     log.info("%s computed in %.2f s (%d kB gz)", key, time.time() - t, len(gz) // 1024)
                     try:
                         data.store.write_bytes(rel, gz)
@@ -241,7 +268,8 @@ def _run(q):
             r = state.runs.get(key)
             if r is None:
                 try:
-                    r = A.run(data, q)
+                    with HEAVY:
+                        r = A.run(data, q)
                 except A.NotFound as e:
                     raise HTTPException(404, str(e))
                 state.runs.put(key, r)
@@ -492,13 +520,10 @@ def _algo() -> int:
     return ALGO_VERSION
 
 
-_ranking_lock = threading.Lock()
-
-
 @app.get("/api/ranking")
 def ranking(request: Request, from_: str | None = Q(None, alias="from"), to: str | None = None,
             dow: str = Q("0-4"), holidays: str = Q("exclude"), mode: str = Q("all"), top: int = Q(50),
-            terminus: bool = Q(False)):
+            terminus: bool = Q(False), stops: bool = Q(False)):
     from . import ranking as R
     data = state.data
     top = max(5, min(int(top), 200))
@@ -509,34 +534,33 @@ def ranking(request: Request, from_: str | None = Q(None, alias="from"), to: str
             raise HTTPException(404, "aucun mois complet calculé pour l'instant : données en cours de préparation")
         a, b = a or w[0], b or w[1]
     try:
-        rq = R.RankQuery(a, b, tuple(sorted(set(_ints(dow, "dow")))), holidays, mode, terminus)
+        rq = R.RankQuery(a, b, tuple(sorted(set(_ints(dow, "dow")))), holidays, mode, terminus, stops)
     except ValueError as e:
         raise HTTPException(422, str(e))
-    key = "ranking-" + rq.key(_stamp(data, a, b)) + f"-{mode}-{int(terminus)}-{top}"
+    key = "ranking-" + rq.key(_stamp(data, a, b), top)
     gz = state.blobs.get(key)
     if gz is None:
-        # One computing request per instance; others report progress from the bucket. Each call
-        # computes for at most ~25 s (Cloud Run gives CPU only during requests), the page re-polls.
-        if not _ranking_lock.acquire(timeout=1):
-            return JSONResponse({"status": "running", "busy": True, "query": rq.canonical()}, status_code=202,
-                                headers={"Cache-Control": "no-store"})
-        try:
-            res = R.compute(data, rq, top=top, budget_s=float(os.environ.get("MS_RANK_BUDGET", "25")))
-        finally:
-            _ranking_lock.release()
-        if res.get("status") != "done":
-            return JSONResponse(res, status_code=202, headers={"Cache-Control": "no-store"})
-        gz = gzip.compress(json.dumps(res, separators=(",", ":"), default=str).encode(), 6)
-        state.blobs.put(key, gz)
+        with state.lock(key):
+            gz = state.blobs.get(key)
+            if gz is None:
+                res = R.compute(data, rq, top=top)
+                gz = gzip.compress(json.dumps(res, separators=(",", ":"), default=str).encode(), 6)
+                if res.get("stretches"):       # an empty window may just not have its cubes yet
+                    state.blobs.put(key, gz)
     return _gz_response(request, gz, _cache_control(data, b))
 
 
 @app.get("/", include_in_schema=False)
 @app.get("/comparer", include_in_schema=False)
 @app.get("/classement", include_in_schema=False)
-@app.get("/methode", include_in_schema=False)
 def index():
     return FileResponse(STATIC / "index.html", headers={"Cache-Control": SHORT_CACHE})
+
+
+@app.get("/methode", include_in_schema=False)
+def methode():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/", status_code=301)
 
 
 _LOADER = """<script>
@@ -553,13 +577,6 @@ _LOADER = """<script>
     s.textContent = main.textContent;
     document.body.appendChild(s);
     try { parent.postMessage({ms: "ready"}, "*"); } catch (x) {}
-    // link the platform's method page from the page's method section
-    var mc = document.querySelector("section.method");
-    if (mc && parent !== window) {
-      var pm = document.createElement("p");
-      pm.innerHTML = '<a href="/methode" target="_top">' + (document.documentElement.lang === "en" ? "Full method (French)" : "La méthode en détail") + " →</a>";
-      mc.appendChild(pm);
-    }
     // the platform page sizes this frame to its content (no scroll inside a scroll)
     var last = 0;
     function size() {

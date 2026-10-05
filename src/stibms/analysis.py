@@ -222,12 +222,19 @@ def _relabel_holidays(excluded: list[dict], holidays: dict) -> None:
             e["label"] = holidays[d]
 
 
+SHOW_HOTSPOTS = False     # the site does not show the package's hotspots (page option show_hotspots)
+# page options: the platform page has its own direction control (Sens) and no method section
+EMBED = {"dir_control": False, "method": False}
+
+
 def contract(r: Run) -> dict:
     t = time.time()
-    hs = r.hotspots()
+    hs = r.hotspots() if SHOW_HOTSPOTS else None
     q = r.query
     out = ms.to_contract(r.analysis, r.net, hotspots=hs, line=q.line, mode=r.mode, source=SOURCE,
                          title=f"Ligne {q.line}", names="title")
+    out["show_hotspots"] = SHOW_HOTSPOTS
+    out.update(EMBED)
     # holidays are excluded on purpose: say so instead of the generic "excluded"
     _relabel_holidays(out.get("period", {}).get("excluded", []), r.holidays)
     cv = out.get("coverage", {})
@@ -336,13 +343,15 @@ def run_compare(data: Data, cq: CompareQuery) -> dict:
     cmp = compare(an_a, an_b, B=cq.B, links=ld.net.links)
     tm["compare"] = round(time.time() - t, 3)
     t = time.time()
-    hs = hotspots(an_b, B=cq.B, links=ld.net.links) if hotspot_status(an_b)[0] else None
+    hs = hotspots(an_b, B=cq.B, links=ld.net.links) if SHOW_HOTSPOTS and hotspot_status(an_b)[0] else None
     tm["hotspots"] = round(time.time() - t, 3)
     mode = route_mode(data, cq.line, db)
     names = name_map("title", ld.net)
     out = ms.to_contract(an_b, ld.net, hotspots=hs, line=cq.line, mode=mode, source=SOURCE,
                          title=f"Ligne {cq.line}", names="title")
     out["compare"] = cmp.to_contract(names)
+    out["show_hotspots"] = SHOW_HOTSPOTS
+    out.update(EMBED)
     _relabel_holidays(out.get("period", {}).get("excluded", []), hd_b)
     _relabel_holidays(out["compare"]["a"]["excluded"], hd_a)
     _relabel_holidays(out["compare"]["b"]["excluded"], hd_b)
@@ -352,59 +361,6 @@ def run_compare(data: Data, cq: CompareQuery) -> dict:
     out["microsegments"] = ms.version()
     out["timings"] = tm
     return out
-
-
-# ---------------------------------------------------------------------------------- network ranking
-LINK_COST_SCHEMA = {
-    "direction_id": pl.Int8, "link_key": pl.Utf8, "from_name": pl.Utf8, "to_name": pl.Utf8, "len_m": pl.Float64,
-    "veh_s_day": pl.Float64, "veh_s_day_line": pl.Float64, "passages_day": pl.Float64, "n_days": pl.Int32,
-    "peak_hour": pl.Int8, "terminal": pl.Boolean,
-}
-
-
-def link_costs(r: Run) -> pl.DataFrame:
-    """Vehicle time lost per day on each link (stop pair) of the line, 6-21 h on the included days.
-
-    Per segment, the day band (``hour`` = -3) gives excess E = O - r (obs per passage over the
-    evening reference) and passages P (summed over included days); E x P / D x tick_s = seconds
-    of vehicle time per day above the evening, D = included days of the line (an average day of the
-    period: a link served on a few days only, e.g. a detour, weighs accordingly; links on fewer than
-    ``Quality.min_days`` days are left out as unreliable) (= the sum over day hours of excess x passages, since
-    the band's O is a ratio of sums). Summed over the segments of the link (signed: a faster bit
-    offsets a slower one). ``veh_s_day_line`` is the same against the line-level reference.
-    ``terminal``: first or last link of one of the line's patterns (dwell there is mostly regulation
-    time at the terminus, which the ranking leaves out by default)."""
-    tick = r.analysis.params.tick_s
-    res = r.analysis.result
-    D = len(r.analysis.days)
-    if not res.height or not D:
-        return pl.DataFrame(schema=LINK_COST_SCHEMA)
-    min_days = r.analysis.quality.min_days
-    res = res.unique(["direction_id", "seg_key", "hour"], keep="first").filter(pl.col("n_days") >= min_days)
-    day = res.filter(pl.col("hour") == -3)
-    per_day = pl.col("passages") / D
-    seg = day.with_columns(
-        (pl.col("excess_per_passage").fill_null(0) * per_day * tick).alias("s"),
-        (pl.col("excess_line_per_passage").fill_null(0) * per_day * tick).alias("sl"),
-        per_day.alias("pd"))
-    # strongest hour of each link (most vehicle time lost)
-    hrs = (res.filter((pl.col("hour") >= 6) & (pl.col("hour") < 21))
-           .with_columns((pl.col("excess_per_passage").fill_null(0) * pl.col("passages")).alias("s"))
-           .group_by("direction_id", "link_key", "hour").agg(pl.col("s").sum())
-           .sort("s", descending=True).unique(["direction_id", "link_key"], keep="first")
-           .select("direction_id", "link_key", pl.col("hour").alias("peak_hour")))
-    g = (seg.group_by("direction_id", "link_key")
-         .agg(pl.col("s").sum().alias("veh_s_day"), pl.col("sl").sum().alias("veh_s_day_line"),
-              pl.col("pd").median().alias("passages_day"), pl.col("n_days").max().cast(pl.Int32),
-              pl.col("len_m").sum().alias("len_m")))
-    names = r.net.links.select("link_key", "from_name", "to_name").unique("link_key", keep="first")
-    # links into or out of a terminus of the line: regulation time, not traffic
-    lk = r.net.links
-    ends = (lk.with_columns(pl.col("link_idx").max().over("pattern_uid").alias("_m"))
-            .filter((pl.col("link_idx") == 0) | (pl.col("link_idx") == pl.col("_m")))["link_key"].unique())
-    out = (g.join(names, on="link_key", how="left").join(hrs, on=["direction_id", "link_key"], how="left")
-           .with_columns(pl.col("link_key").is_in(ends.implode()).alias("terminal")))
-    return out.select([pl.col(c).cast(t) for c, t in LINK_COST_SCHEMA.items()])
 
 
 def result_table(r: Run) -> pl.DataFrame:
