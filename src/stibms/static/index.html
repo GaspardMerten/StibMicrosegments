@@ -417,13 +417,12 @@ function covSummary(days, dows, holidays, label) {
 }
 function covNotes(sum, from, to) {
   const notes = [];
-  const nd = sum.by.not_derived || [], ni = sum.by.not_ingested || [], la = sum.by.line_absent || [];
+  const nd = sum.by.not_derived || [], ni = sum.by.not_ingested || [];
   if (nd.length) {
     const ms = [...new Set(nd.map(d => d.date.slice(0, 7)))].map(fmonth);
     notes.push(`<div class="notice info"><b>Données en cours de préparation.</b> Les observations de ${ms.join(", ")} sont collectées mais pas encore calculées${sum.ok ? " : ces jours-là sont laissés de côté pour l'instant" : ""}. Le calcul tourne en arrière-plan ; réessayez dans quelques minutes.</div>`);
   }
   if (ni.length && ni.length === sum.sel) notes.push(`<div class="notice"><b>Pas encore de données</b> pour cette période : la collecte va jusqu'au ${fdate(INFO.ingested.to)}.</div>`);
-  if (la.length) notes.push(`<div class="notice">${la.length === 1 ? "Un jour est écarté" : la.length + " jours sont écartés"} parce que la ligne manque dans le flux STIB (${la.slice(0, 5).map(d => fdate(d.date)).join(", ")}${la.length > 5 ? "…" : ""}) : ces jours-là, STIB n'a publié qu'une partie du réseau.</div>`);
   return notes.join("");
 }
 
