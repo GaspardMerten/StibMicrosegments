@@ -122,7 +122,7 @@ def line_modes(data: Data) -> dict[str, dict]:
                 out[ln] = {"mode": ROUTE_TYPES.get(int(rt)) if rt is not None else None, "color": r.get("route_color"),
                            "text_color": r.get("route_text_color"), "name": r.get("route_long_name")}
         return out
-    return data._cached("line_modes", f)
+    return data._cached("line_modes", f, ttl=3600)
 
 
 # ---------------------------------------------------------------------------------- inputs
@@ -150,44 +150,52 @@ def month_tables(data: Data, month: str) -> tuple[pl.DataFrame | None, pl.DataFr
 
 
 def _registry(data: Data) -> pl.DataFrame | None:
-    return data._cached("rank_registry", lambda: data.read_optional(f"derived/v{ALGO_VERSION}/linkkeys.parquet"))
+    return data._cached("rank_registry", lambda: data.read_optional(f"derived/v{ALGO_VERSION}/linkkeys.parquet"), ttl=3600)
 
 
 # ---------------------------------------------------------------------------------- geometry
-def _xy(coords, lat0: float) -> list[tuple[float, float]]:
-    k = math.cos(math.radians(lat0))
-    return [(x * 111320.0 * k, y * 110540.0) for x, y in coords]
+_ov_cache: dict[tuple[str, str], float] = {}
 
 
-def _dist_pt_poly(p, poly) -> float:
-    best = float("inf")
-    for (x1, y1), (x2, y2) in zip(poly, poly[1:]):
-        dx, dy = x2 - x1, y2 - y1
-        L = dx * dx + dy * dy
-        t = 0.0 if L == 0 else max(0.0, min(1.0, ((p[0] - x1) * dx + (p[1] - y1) * dy) / L))
-        best = min(best, math.hypot(p[0] - x1 - t * dx, p[1] - y1 - t * dy))
-    return best
+def _xy(coords, lat0: float):
+    import numpy as np
+    a = np.asarray(coords, dtype=float)
+    return np.column_stack([a[:, 0] * 111320.0 * math.cos(math.radians(lat0)), a[:, 1] * 110540.0])
 
 
-def _densify(poly, step: float = 5.0):
-    out = [poly[0]]
-    for (x1, y1), (x2, y2) in zip(poly, poly[1:]):
-        n = max(1, int(math.hypot(x2 - x1, y2 - y1) // step))
-        out += [(x1 + (x2 - x1) * i / n, y1 + (y2 - y1) * i / n) for i in range(1, n + 1)]
-    return out
+def _densify(P, step: float = 5.0):
+    import numpy as np
+    out = [P[:1]]
+    for p, q in zip(P[:-1], P[1:]):
+        n = max(1, int(np.hypot(*(q - p)) // step))
+        t = np.arange(1, n + 1)[:, None] / n
+        out.append(p + (q - p) * t)
+    return np.vstack(out)
 
 
 def overlap(a, b) -> float:
     """Share of the shorter polyline (lon/lat) within MERGE_DIST_M of the other one."""
+    import numpy as np
     if not a or not b or len(a) < 2 or len(b) < 2:
         return 0.0
     lat0 = a[0][1]
     A, B = _xy(a, lat0), _xy(b, lat0)
-    la = sum(math.hypot(x2 - x1, y2 - y1) for (x1, y1), (x2, y2) in zip(A, A[1:]))
-    lb = sum(math.hypot(x2 - x1, y2 - y1) for (x1, y1), (x2, y2) in zip(B, B[1:]))
+    la, lb = np.hypot(*np.diff(A, axis=0).T).sum(), np.hypot(*np.diff(B, axis=0).T).sum()
     short, long_ = (A, B) if la <= lb else (B, A)
-    pts = _densify(short)
-    return sum(_dist_pt_poly(p, long_) <= MERGE_DIST_M for p in pts) / len(pts)
+    pts = _densify(short)                                  # n x 2
+    p0, d = long_[:-1], np.diff(long_, axis=0)             # m x 2
+    L = (d * d).sum(1)
+    t = np.clip(((pts[:, None, :] - p0[None]) * d[None]).sum(2) / np.where(L > 0, L, 1)[None], 0, 1)
+    dist = np.hypot(*(pts[:, None, :] - p0[None] - t[..., None] * d[None]).transpose(2, 0, 1)).min(1)
+    return float((dist <= MERGE_DIST_M).mean())
+
+
+def _overlap_keys(a: str, b: str, geo: dict) -> float:
+    k = (a, b) if a < b else (b, a)
+    v = _ov_cache.get(k)
+    if v is None:
+        v = _ov_cache[k] = overlap(geo.get(a), geo.get(b))
+    return v
 
 
 def merge_groups(g: pl.DataFrame, geo: dict[str, list]) -> dict[str, str]:
@@ -205,7 +213,7 @@ def merge_groups(g: pl.DataFrame, geo: dict[str, list]) -> dict[str, str]:
             return k
         for i, a in enumerate(order):
             for b in order[i + 1:]:
-                if find(a) != find(b) and overlap(geo.get(a), geo.get(b)) >= MERGE_OVERLAP:
+                if find(a) != find(b) and _overlap_keys(a, b, geo) >= MERGE_OVERLAP:
                     ra, rb = find(a), find(b)
                     # the root is the costlier link (earlier in ``order``)
                     if order.index(ra) < order.index(rb):
@@ -223,8 +231,14 @@ def per_line_links(data: Data, rq: RankQuery, info: dict) -> tuple[pl.DataFrame,
     passages per day, reason. Returns (frame, lines with data, lines used after the mode filter)."""
     from . import holidays as hol
     frames, days, links = [], [], []
-    for m in months_between(rq.first, rq.last):
-        c, d, lk = month_tables(data, m)
+    months = months_between(rq.first, rq.last)
+    if len(months) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(12, len(months))) as ex:
+            tables = list(ex.map(lambda m: month_tables(data, m), months))
+    else:
+        tables = [month_tables(data, m) for m in months]
+    for c, d, lk in tables:
         if c is not None and c.height:
             frames.append(c)
         if d is not None and d.height:
