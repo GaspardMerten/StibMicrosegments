@@ -32,7 +32,7 @@ Periods that are fully past and ingested are sent with ``Cache-Control: max-age=
 Heavy imports (polars, microsegments) happen on the first data request, not at start-up.
 CPU-heavy work (an analysis or comparison not in cache) runs one at a time per instance (``HEAVY``),
 so a burst of new requests cannot starve the cheap ones (health, lines, cached results, ranking);
-cache hits (memory or bucket) never take that guard. Start-up warms imports and bucket listings.
+cache hits (memory or bucket) never take that guard. A start-up thread warms imports and listings.
 The line page hides the package's hotspots (``show_hotspots: false``), so they are not computed.
 """
 from __future__ import annotations
@@ -80,13 +80,14 @@ class _Heavy:
 HEAVY = _Heavy()
 
 
+_warming: threading.Thread | None = None
+
+
 def _warm() -> None:
-    """Pay the per-process set-up during start-up (CPU boost, before Cloud Run routes traffic here)
-    rather than on the first data request: heavy imports, the bucket client and its token, the
-    listings the cache keys depend on. Cached results never wait for the HEAVY guard; what made a
-    cached analysis take ~8 s under load was this set-up landing on an instance's first request."""
-    if not os.environ.get("MS_BUCKET") or os.environ.get("MS_WARM", "1") == "0":
-        return
+    """Per-process set-up started with the process (in a thread: health answers at once) instead of
+    on the first data request: heavy imports, the bucket client and its token, the listings the
+    cache keys depend on. Cached results never take the HEAVY guard; a cached analysis measured at
+    ~8 s under load was this set-up on an instance Cloud Run had just added (CPU-driven scale-out)."""
     t = time.time()
     try:
         from . import analysis, ranking  # noqa: F401 - imports polars and the package modules
@@ -102,7 +103,10 @@ def _warm() -> None:
 
 @contextlib.asynccontextmanager
 async def _lifespan(app):
-    _warm()
+    global _warming
+    if os.environ.get("MS_BUCKET") and os.environ.get("MS_WARM", "1") != "0":
+        _warming = threading.Thread(target=_warm, name="ms-warm", daemon=True)
+        _warming.start()
     yield
 
 
@@ -143,6 +147,9 @@ class State:
 
     @property
     def data(self):
+        w = _warming
+        if self._data is None and w is not None and w is not threading.current_thread():
+            w.join(30)   # the warm-up is doing exactly what this request needs: share it
         if self._data is None:
             from .data import Data
             root = os.environ.get("MS_BUCKET")
