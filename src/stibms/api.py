@@ -48,7 +48,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 log = logging.getLogger("stibms.api")
 STATIC = Path(__file__).parent / "static"
-LONG_CACHE = "public, max-age=86400"
+LONG_CACHE = "public, max-age=3600"   # results of past periods; short enough for package upgrades
 SHORT_CACHE = "public, max-age=300"
 
 app = FastAPI(title="STIB microsegments", docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -621,12 +621,14 @@ def _template() -> str | None:
 
 @app.api_route("/view", methods=["GET", "HEAD"], include_in_schema=False)
 def view():
-    html = state.blobs.get("template")
+    from . import ms
+    key = f"template-{ms.version()}"      # a new package version renders a new page
+    html = state.blobs.get(key)
     if html is None:
         html = _template()
         if html is None:
             raise HTTPException(404, "the microsegments page template is not available")
-        state.blobs.put("template", html)
+        state.blobs.put(key, html)
     return Response(html, media_type="text/html; charset=utf-8", headers={"Cache-Control": SHORT_CACHE})
 
 

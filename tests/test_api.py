@@ -79,7 +79,7 @@ def test_analysis_contract(client):
     r = client.get(f"/api/analysis?{Q}&dow=0-6")
     assert r.status_code == 200, r.text
     assert r.headers["x-cache"] == "computed"
-    assert "max-age=86400" in r.headers["cache-control"]
+    assert "max-age=3600" in r.headers["cache-control"]
     c = r.json()
     assert c["v"] == 1 and c["line"] == "S1" and c["dirs"]
     ex = {e["date"]: e["reason"] for e in c["period"]["excluded"]}

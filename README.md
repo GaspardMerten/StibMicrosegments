@@ -72,7 +72,7 @@ per request (`/api/ranking` answers 202 with progress until done; the page polls
 
 ## Image
 
-The image installs `microsegments>=0.2.1,<0.3` from PyPI. To build against a local working copy
+The image installs `microsegments>=0.2.2,<0.3` from PyPI. To build against a local working copy
 instead (staged without `.git` / `.venv`, passed as a named build context):
 
 ```bash
