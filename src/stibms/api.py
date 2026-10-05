@@ -255,10 +255,15 @@ def _gz_response(request: Request, gz: bytes, cc: str, media="application/json",
     return Response(gzip.decompress(gz), media_type=media, headers=headers)
 
 
+# Bump when the JSON a result holds changes without the data changing (page options such as
+# show_hotspots, contract fields): older bucket results are then ignored instead of served.
+RESULT_REV = 2
+
+
 def _cached_json(kind: str, q, compute, request: Request) -> Response:
     """kind: result family; compute() -> JSON-able. In-process LRU, then bucket, then compute."""
     data = state.data
-    key = f"{kind}-{q.key(_stamp_of(data, q))}"
+    key = f"{kind}-r{RESULT_REV}-{q.key(_stamp_of(data, q))}"
     cc = _cache_control(data, q.last)
     gz = state.blobs.get(key)
     src = "memory"
@@ -608,7 +613,10 @@ _LOADER = """<script>
     if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || r.statusText); });
     return r.text();
   }).then(function (txt) {
-    document.getElementById("ms-data").textContent = txt;
+    // the site's page options win over whatever an older cached response says (HTTP or bucket cache)
+    var d = JSON.parse(txt);
+    d.show_hotspots = false; d.dir_control = false; d.method = false;
+    document.getElementById("ms-data").textContent = JSON.stringify(d);
     var s = document.createElement("script");
     s.textContent = main.textContent;
     document.body.appendChild(s);
