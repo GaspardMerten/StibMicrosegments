@@ -98,6 +98,48 @@ resource "google_cloud_run_v2_job" "backfill" {
   depends_on = [google_secret_manager_secret_iam_member.run_token]
 }
 
+# Derive (placed / passages / coverage per line-month) over a range of months, in one task: months
+# must run one after the other because they share the link-key registry. ~4-5 min per month for
+# all lines, so a full history (~31 months) takes ~2.5 h, hence the long timeout. The nightly
+# ingest re-derives the current month itself; this job is for backfills and ALGO_VERSION bumps:
+#   gcloud run jobs execute ms-derive --region europe-west1 --args=--from,2024-04,--to,2026-10
+resource "google_cloud_run_v2_job" "derive" {
+  name                = "ms-derive"
+  location            = var.region
+  deletion_protection = false
+
+  template {
+    task_count = 1
+    template {
+      service_account = google_service_account.run.email
+      max_retries     = 1
+      timeout         = "21600s"
+
+      containers {
+        # Created on the image CI already pushed; CI keeps it updated like the other jobs.
+        image   = "${var.region}-docker.pkg.dev/${var.project_id}/${var.image_repository}/stib-microsegments:latest"
+        command = ["python", "-m", "stibms.derive"]
+        args    = ["--month", "current"]
+
+        resources {
+          limits = {
+            cpu    = "2"
+            memory = "8Gi"
+          }
+        }
+        env {
+          name  = "MS_BUCKET"
+          value = "gs://${google_storage_bucket.data.name}"
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [client, client_version, template[0].template[0].containers[0].image]
+  }
+}
+
 resource "google_cloud_run_v2_job_iam_member" "scheduler_runs_ingest" {
   name     = google_cloud_run_v2_job.ingest.name
   location = google_cloud_run_v2_job.ingest.location
@@ -159,7 +201,7 @@ resource "google_cloud_run_v2_service" "api" {
   }
 
   lifecycle {
-    ignore_changes = [client, client_version, template[0].containers[0].image]
+    ignore_changes = [client, client_version, scaling, template[0].containers[0].image, template[0].containers[0].command, template[0].containers[0].args]
   }
 }
 

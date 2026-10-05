@@ -56,7 +56,7 @@ jobs:
 
       - name: Update ingest jobs
         run: |
-          for job in ms-ingest ms-backfill; do
+          for job in ms-ingest ms-backfill ms-derive; do
             gcloud run jobs update "$job" --image "$IMAGE:$GITHUB_SHA" \
               --project "$PROJECT" --region "$REGION" --quiet
           done
