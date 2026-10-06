@@ -126,7 +126,9 @@ def test_tune(client):
     r = client.get(f"/api/tune?{Q}&lengths=20,40&B=10")
     assert r.status_code == 200, r.text
     t = r.json()
-    assert t["recommended"] in (20.0, 40.0) and len(t["table"]) == 2
+    # microsegments >= 0.2.7: when no candidate passes the gates, the default 30 m is kept
+    assert len(t["table"]) == 2
+    assert t["recommended"] in (20.0, 40.0) or (t["recommended"] == 30.0 and "default" in t["rule"])
 
 
 def test_errors(client):

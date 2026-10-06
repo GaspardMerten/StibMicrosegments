@@ -32,7 +32,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e '.[dev]'
-      - run: pip install "microsegments>=0.2.6,<0.3"
+      - run: pip install "microsegments>=0.2.7,<0.3"
       - run: pytest -q
 
   deploy:
