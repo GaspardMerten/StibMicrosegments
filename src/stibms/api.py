@@ -649,7 +649,7 @@ def _template() -> str | None:
     try:
         from microsegments.html.export import render
         html = render({"tiles": True}, title="STIB · micro-segments", lang="fr",
-                      description="Observations des véhicules STIB par micro-segment.")
+                      description="Temps passé par les véhicules STIB sur chaque tronçon de 30 m.")
     except Exception:  # noqa: BLE001 - template not shipped / incompatible: the page falls back
         log.exception("page template unavailable")
         return None

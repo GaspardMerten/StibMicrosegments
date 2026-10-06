@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>STIB micro-segments</title>
-<meta name="description" content="Où les trams, bus et métros de la STIB perdent-ils du temps ? Observations par micro-segment, comparaison de périodes et classement du réseau.">
+<meta name="description" content="Où les trams, bus et métros de la STIB perdent-ils du temps ? Temps passé par véhicule sur chaque tronçon de 30 m, comparaison de périodes et classement du réseau.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -216,12 +216,11 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
         <button class="go" id="go" type="submit">Afficher</button>
         <div class="presets" id="presets" style="flex-basis:100%"></div>
         <details class="more">
-          <summary>Options : jours, longueur des tronçons, jours fériés, référence</summary>
+          <summary>Options : jours, jours fériés, référence soirée</summary>
           <div class="opts">
             <div class="fld"><span>Jours</span><div class="dow" id="dow"></div></div>
-            <label class="fld"><span>Tronçons (m)</span><input type="number" id="seg" min="5" max="500" step="5" value="30"></label>
             <label class="fld"><span>Jours fériés</span><select id="holidays"><option value="exclude">exclus</option><option value="include">inclus</option></select></label>
-            <label class="fld"><span>Référence du soir</span><select id="ref"><option value="20-23">20 h – 23 h</option><option value="21-23">21 h – 23 h</option></select></label>
+            <label class="fld"><span>Référence : soirée</span><select id="ref"><option value="20-23">20 h – 23 h</option><option value="21-23">21 h – 23 h</option></select></label>
           </div>
         </details>
       </form>
@@ -234,7 +233,7 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
   <!-- ============================================================ ranking -->
   <section id="rankview" hidden>
     <div class="bar">
-      <p class="lede" id="rlede">Temps perdu entre les arrêts : les tronçons du réseau où les véhicules STIB perdent le plus de temps par rapport au soir (20 h – 23 h, circulation fluide), de 6 h à 21 h, toutes lignes confondues. Les lignes qui partagent un tronçon s'additionnent. Le temps passé aux arrêts n'est pas compté, ni les terminus et les arrêts où les véhicules attendent pour respecter l'horaire.</p>
+      <p class="lede" id="rlede"></p>
       <form id="rf" autocomplete="off">
         <div class="fld"><span>Période</span>
           <div class="dates"><input type="date" id="rfrom" aria-label="Du"><em>→</em><input type="date" id="rto" aria-label="Au"></div></div>
@@ -423,7 +422,7 @@ function lineParams() {
   if (TAB === "cmp") { p.set("a", `${$("a1").value}..${$("a2").value}`); p.set("b", `${$("b1").value}..${$("b2").value}`); }
   else { p.set("from", $("from").value); p.set("to", $("to").value); }
   p.set("dow", dowGet($("dow")));
-  if ($("seg").value && $("seg").value !== "30") p.set("seg", $("seg").value);
+  // segments are always 30 m on the site (the API still takes seg=)
   if ($("holidays").value !== "exclude") p.set("holidays", $("holidays").value);
   if ($("ref").value !== "20-23") p.set("ref", $("ref").value);
   return p;
@@ -462,7 +461,7 @@ function covNotes(sum, from, to) {
   const nd = sum.by.not_derived || [], ni = sum.by.not_ingested || [];
   if (nd.length) {
     const ms = [...new Set(nd.map(d => d.date.slice(0, 7)))].map(fmonth);
-    notes.push(`<div class="notice info"><b>Données en cours de préparation.</b> Les observations de ${ms.join(", ")} sont collectées mais pas encore calculées${sum.ok ? " : ces jours-là sont laissés de côté pour l'instant" : ""}. Le calcul tourne en arrière-plan ; réessayez dans quelques minutes.</div>`);
+    notes.push(`<div class="notice info"><b>Données en cours de préparation.</b> Les signalements de ${ms.join(", ")} sont collectés mais pas encore calculées${sum.ok ? " : ces jours-là sont laissés de côté pour l'instant" : ""}. Le calcul tourne en arrière-plan ; réessayez dans quelques minutes.</div>`);
   }
   if (ni.length && ni.length === sum.sel) notes.push(`<div class="notice"><b>Pas encore de données</b> pour cette période : la collecte va jusqu'au ${fdate(INFO.ingested.to)}.</div>`);
   return notes.join("");
@@ -601,6 +600,13 @@ $("rf").addEventListener("submit", e => { e.preventDefault(); runRank(); });
 $("rterm").addEventListener("change", runRank);
 $("rtop").addEventListener("change", runRank);
 
+// ranking intro: time lost compared with the evening, per vehicle, between stops
+function rlede(termIn) {
+  return "Temps perdu entre les arrêts : les tronçons du réseau où les véhicules STIB perdent le plus de temps par rapport à la soirée (20–23 h), de 6 h à 21 h, toutes lignes confondues. "
+    + "La comparaison se fait par véhicule : qu'il en passe moins en soirée ne la fausse pas. Les lignes qui partagent un tronçon s'additionnent. Le temps passé aux arrêts n'est pas compté"
+    + (termIn ? "." : ", ni les terminus et les arrêts où les véhicules attendent pour respecter l'horaire.");
+}
+$("rlede").textContent = rlede(false);
 function heat(t) {
   const s = [[255, 230, 0], [253, 141, 60], [227, 26, 28], [189, 0, 90]];
   t = Math.max(0, Math.min(1, t)) * (s.length - 1);
@@ -616,8 +622,7 @@ function drawRank(R) {
   const q = R.query, S = R.stretches || [], termIn = !!q.terminus;
   if (!$("rfrom").value) $("rfrom").value = q.first;
   if (!$("rto").value) $("rto").value = q.last;
-  $("rlede").textContent = "Temps perdu entre les arrêts : les tronçons du réseau où les véhicules STIB perdent le plus de temps par rapport au soir (20 h – 23 h, circulation fluide), de 6 h à 21 h, toutes lignes confondues. Les lignes qui partagent un tronçon s'additionnent. Le temps passé aux arrêts n'est pas compté"
-    + (termIn ? "." : ", ni les terminus et les arrêts où les véhicules attendent pour respecter l'horaire.");
+  $("rlede").textContent = rlede(termIn);
   const daysTxt = q.dow.length === 5 && q.dow.join() === "0,1,2,3,4" ? "jours ouvrables" : "jours " + q.dow.map(d => DOW[d]).join(", ");
   const modeTxt = {all: "toutes les lignes", tram: "les trams", bus: "les bus", metro: "le métro"}[q.mode];
   if (!S.length) {
@@ -630,7 +635,7 @@ function drawRank(R) {
   const ex = R.excluded || {n: 0, top: []};
   $("rout").innerHTML = `
     <p class="rk-sum">Du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b>, ${daysTxt}, ${modeTxt} (${R.lines_used} lignes) :
-      les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> entre les arrêts par rapport au soir,
+      les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> entre les arrêts par rapport à la soirée (20–23 h),
       soit environ <b>${nf(top * R.days_per_year / 1000, 1)} milliers d'heures par an</b>.</p>
     <div class="tiles">
       <div class="tile"><b>${nf(S[0].veh_h_day, 1)} h</b><span>par jour sur le tronçon n° 1, ${esc(S[0].from)} → ${esc(S[0].to)}</span></div>
@@ -640,20 +645,20 @@ function drawRank(R) {
     </div>
     <div class="rkgrid">
       <div class="mapcol"><div id="rkmap"></div></div>
-      <div><p class="ph-hint">Touchez un tronçon pour le voir sur la carte et lire le détail.</p><table class="tbl"><thead><tr><th>#</th><th>Tronçon et lignes</th><th style="text-align:right">h-véh. / jour</th><th style="text-align:right">par an</th><th style="text-align:right" title="secondes perdues par passage, par rapport au soir">s / passage</th></tr></thead>
+      <div><p class="ph-hint">Touchez un tronçon pour le voir sur la carte et lire le détail.</p><table class="tbl"><thead><tr><th>#</th><th>Tronçon et lignes</th><th style="text-align:right">h-véh. / jour</th><th style="text-align:right">par an</th><th style="text-align:right" title="secondes perdues par véhicule, par rapport à la soirée (20–23 h)">s / véhicule</th></tr></thead>
       <tbody>${S.map((s, i) => `<tr data-i="${i}">
         <td class="rk">${s.rank}</td>
         <td class="str"><b>${esc(s.from)} → ${esc(s.to)}</b>
           <small>${nf(s.len_m)} m · ${nf(s.passages_day)} passages / jour</small>
-          <small class="ph-x">${nf(s.veh_h_year)} h-véh. par an · ${nf(s.s_per_passage, 0)} s perdues par passage</small>
+          <small class="ph-x">${nf(s.veh_h_year)} h-véh. par an · ${nf(s.s_per_passage, 0)} s perdues par véhicule</small>
           <div class="lines">${s.lines.map(x => `<a href="/?line=${encodeURIComponent(x.line)}&from=${q.first}&to=${q.last}&dow=${q.dow.join(",")}" title="Ligne ${esc(x.line)} : ${nf(x.veh_h_day, 1)} h / jour, ${PEAK[x.peak] || ""}${x.reason ? " · " + RREASON_LONG[x.reason] : ""}">${lb(x)}</a>`).join("")}</div>
           ${(s.reasons || []).map(r => `<span class="tag" title="${esc(RREASON_LONG[r] || r)}">${esc(RREASON[r] || r)}</span>`).join("")}
           <div class="bar-in" style="width:${Math.max(2, 100 * s.veh_h_day / max)}%"></div></td>
         <td class="n hd">${nf(s.veh_h_day, 1)}<span class="u"> h/j</span></td><td class="n">${nf(s.veh_h_year)}</td><td class="n">${nf(s.s_per_passage, 0)}</td></tr>`).join("")}</tbody></table></div>
     </div>
     ${ex.n ? `<details class="rk-ex"${PHONE.matches ? "" : " open"}><summary><b>${nf(ex.n)} tronçon${ex.n > 1 ? "s" : ""} laissé${ex.n > 1 ? "s" : ""} de côté</b> (${nf(ex.veh_h_day, 0)} h-véh. / jour)<span class="ex-why"> : terminus, ou arrêts où les véhicules attendent volontairement pour respecter l'horaire, pas un ralentissement dû à la circulation. Cochez « Inclure les terminus et les arrêts où les véhicules attendent pour respecter l'horaire » pour les voir dans le classement. Les principaux :</span></summary>
-      <ul>${ex.top.map(x => `<li>${esc(x.from)} → ${esc(x.to)} (${x.lines.map(y => esc(y.line)).join(", ")}) : ${nf(x.veh_h_day, 1)} h / jour, ${nf(x.s_per_passage, 0)} s par passage · ${x.reasons.map(r => esc(RREASON_LONG[r] || r)).join(" ; ")}</li>`).join("")}</ul></details>` : ""}
-    <p class="method">Toutes les 20 secondes, la STIB publie la position de chaque véhicule. Chaque ligne est découpée en tronçons de 30 m ; on compte combien de fois un véhicule y est vu (1 observation ≈ 20 s passées là), par passage. Le temps en plus par rapport au soir (20 h – 23 h, mêmes jours), multiplié par les passages de 6 h à 21 h, donne le temps perdu par jour. Les zones d'arrêt (30 m avant à 60 m après chaque arrêt) ne sont pas comptées : on y attend aussi des voyageurs. Les jours fériés et les jours où le flux est incomplet sont écartés. Par an : × ${R.days_per_year} jours (ordre de grandeur).</p>`;
+      <ul>${ex.top.map(x => `<li>${esc(x.from)} → ${esc(x.to)} (${x.lines.map(y => esc(y.line)).join(", ")}) : ${nf(x.veh_h_day, 1)} h / jour, ${nf(x.s_per_passage, 0)} s perdues par véhicule · ${x.reasons.map(r => esc(RREASON_LONG[r] || r)).join(" ; ")}</li>`).join("")}</ul></details>` : ""}
+    <p class="method">Toutes les 20 secondes, chaque véhicule STIB signale sa position. Chaque ligne est découpée en tronçons de 30 m ; on compte combien de fois un véhicule y est signalé (1 signalement ≈ 20 s passées là) et on divise par le nombre de passages : c'est le temps passé par véhicule. Le temps en plus par rapport à la soirée (20–23 h, mêmes jours), multiplié par les passages de 6 h à 21 h, donne le temps perdu par jour. La comparaison se fait par véhicule : qu'il en passe moins en soirée ne la fausse pas. Les zones d'arrêt (30 m avant à 60 m après chaque arrêt) ne sont pas comptées : on y attend aussi des voyageurs. Les jours fériés et les jours où le flux est incomplet sont écartés. Par an : × ${R.days_per_year} jours (ordre de grandeur).</p>`;
   if (RMAP) { RMAP.remove(); RMAP = null; }
   RMAP = L.map("rkmap", {scrollWheelZoom: false});
   L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
@@ -731,8 +736,8 @@ async function boot(first) {
   if (u.get("a")) { const [x, y] = u.get("a").split(".."); $("a1").value = x; $("a2").value = y; }
   if (u.get("b")) { const [x, y] = u.get("b").split(".."); $("b1").value = x; $("b2").value = y; }
   dowSet($("dow"), u.get("dow"));
-  for (const k of ["seg", "holidays", "ref"]) if (u.get(k)) $(k).value = u.get(k);
-  if (u.get("seg") || u.get("holidays") || u.get("ref")) document.querySelector("#f details").open = true;
+  for (const k of ["holidays", "ref"]) if (u.get(k)) $(k).value = u.get(k);
+  if (u.get("holidays") || u.get("ref")) document.querySelector("#f details").open = true;
   const l = lineOf(want);
   if (l && l.available) runLine();
   else done($("status"), `La ligne ${esc(want)} n'a pas encore de données calculées : choisissez une autre ligne.`, true);
