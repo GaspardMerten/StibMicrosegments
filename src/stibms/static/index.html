@@ -461,7 +461,7 @@ function covNotes(sum, from, to) {
   const nd = sum.by.not_derived || [], ni = sum.by.not_ingested || [];
   if (nd.length) {
     const ms = [...new Set(nd.map(d => d.date.slice(0, 7)))].map(fmonth);
-    notes.push(`<div class="notice info"><b>Données en cours de préparation.</b> Les signalements de ${ms.join(", ")} sont collectés mais pas encore calculées${sum.ok ? " : ces jours-là sont laissés de côté pour l'instant" : ""}. Le calcul tourne en arrière-plan ; réessayez dans quelques minutes.</div>`);
+    notes.push(`<div class="notice info"><b>Données en cours de préparation.</b> Les signalements de ${ms.join(", ")} sont collectés mais pas encore calculés${sum.ok ? " : ces jours-là sont laissés de côté pour l'instant" : ""}. Le calcul tourne en arrière-plan ; réessayez dans quelques minutes.</div>`);
   }
   if (ni.length && ni.length === sum.sel) notes.push(`<div class="notice"><b>Pas encore de données</b> pour cette période : la collecte va jusqu'au ${fdate(INFO.ingested.to)}.</div>`);
   return notes.join("");

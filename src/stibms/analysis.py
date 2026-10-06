@@ -162,7 +162,7 @@ def load(data: Data, line: str, dates: list[dt.date], label: str = "cette pério
         pending = not_derived_months(data, dates)
         if pending:
             raise NotFound(f"données en cours de préparation pour {label} (mois {', '.join(pending)} pas encore calculés)")
-        raise NotFound(f"pas d'observation de la ligne {line} pour {label}")
+        raise NotFound(f"aucun signalement de la ligne {line} pour {label}")
     passages = data.passages(line, dates)
     cov = with_line_absence(data.coverage(dates), placed, dates)
     net = data.network(line, dates)
@@ -327,7 +327,7 @@ def run_compare(data: Data, cq: CompareQuery) -> dict:
         if not seen & set(ds):
             pending = not_derived_months(data, ds)
             raise NotFound(f"{lab} : " + (f"données en cours de préparation (mois {', '.join(pending)} pas encore calculés)"
-                                          if pending else f"pas d'observation de la ligne {cq.line}"))
+                                          if pending else f"aucun signalement de la ligne {cq.line}"))
     t = time.time()
     segs = _segments(ld, cq)
     cube = count(ld.placed, segs, _params(cq).tick_s)
