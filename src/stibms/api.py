@@ -178,7 +178,7 @@ def _date(s: str | None, name: str) -> dt.date | None:
     try:
         return dt.date.fromisoformat(s)
     except ValueError:
-        raise HTTPException(422, f"{name}: expected YYYY-MM-DD")
+        raise HTTPException(422, f"{name} : date invalide (AAAA-MM-JJ).")
 
 
 def _ints(s: str, name: str) -> list[int]:
@@ -213,9 +213,9 @@ def period(line: str = Q(..., description="line number (GTFS route_short_name)")
            from_: str = Q(..., alias="from"), to: str = Q(...)):
     a, b = _date(from_, "from"), _date(to, "to")
     if a > b:
-        raise HTTPException(422, "from must be <= to")
+        raise HTTPException(422, "La date de début doit précéder la date de fin.")
     if (b - a).days > 400:
-        raise HTTPException(422, "period longer than 400 days")
+        raise HTTPException(422, "Période trop longue : 400 jours au plus.")
     return line.strip(), a, b
 
 
@@ -496,7 +496,7 @@ def _range(s: str, name: str) -> tuple[dt.date, dt.date]:
         a, b = s.split("..")
         a, b = dt.date.fromisoformat(a.strip()), dt.date.fromisoformat(b.strip())
     except ValueError:
-        raise HTTPException(422, f"{name}: expected YYYY-MM-DD..YYYY-MM-DD")
+        raise HTTPException(422, f"{name} : période invalide (AAAA-MM-JJ..AAAA-MM-JJ).")
     return a, b
 
 
@@ -610,12 +610,17 @@ _LOADER = """<script>
   var q = new URLSearchParams(location.search);
   var api = (q.get("a") && q.get("b")) ? "/api/compare" : "/api/analysis";
   fetch(api + location.search).then(function (r) {
-    if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || r.statusText); });
+    // error bodies: FastAPI JSON (detail: a string, or a list of {msg}) or a proxy's HTML / text
+    if (!r.ok) return r.text().then(function (t) {
+      var m = r.status + " " + r.statusText;
+      try { var e = JSON.parse(t).detail; m = Array.isArray(e) ? e.map(function (x) { return x.msg || x; }).join(" ; ") : (e || m); } catch (x) {}
+      throw new Error(m);
+    });
     return r.text();
   }).then(function (txt) {
     // the site's page options win over whatever an older cached response says (HTTP or bucket cache)
     var d = JSON.parse(txt);
-    d.show_hotspots = false; d.dir_control = false; d.method = false;
+    d.show_hotspots = false; d.dir_control = false; d.method = false; d.host_controls = true;
     document.getElementById("ms-data").textContent = JSON.stringify(d);
     var s = document.createElement("script");
     s.textContent = main.textContent;
@@ -648,7 +653,7 @@ def _template() -> str | None:
     import re
     try:
         from microsegments.html.export import render
-        html = render({"tiles": True}, title="STIB · micro-segments", lang="fr",
+        html = render({"tiles": True}, title="STIB · microsegments", lang="fr",
                       description="Temps passé par les véhicules STIB sur chaque tronçon de 30 m.")
     except Exception:  # noqa: BLE001 - template not shipped / incompatible: the page falls back
         log.exception("page template unavailable")
@@ -656,8 +661,6 @@ def _template() -> str | None:
     m = re.search(r'<script id="ms-data" type="application/json">.*?</script>\s*<script>(.*?)</script>', html, flags=re.S)
     if not m:
         return None
-    a, b = m.span(1)
-    m = re.search(r'<script id="ms-data" type="application/json">.*?</script>\s*<script>(.*?)</script>', html, flags=re.S)
     a, b = m.span(1)
     html = (html[:m.start()] + '<script id="ms-data" type="application/json"></script>\n'
             + '<script type="text/plain" id="ms-main">' + html[a:b] + "</script>" + html[m.end():])

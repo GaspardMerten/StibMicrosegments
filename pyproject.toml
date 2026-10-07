@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # The analysis package; the ingest does not need it.
-analysis = ["microsegments>=0.2.7,<0.3"]
+analysis = ["microsegments>=0.2.8,<0.3"]
 # The API (also needs microsegments; the Dockerfile installs it first).
 api = ["fastapi>=0.110", "uvicorn>=0.29"]
 dev = ["pytest>=8.0", "fastapi>=0.110", "httpx>=0.27"]

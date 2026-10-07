@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>STIB micro-segments</title>
+<title>STIB microsegments</title>
 <meta name="description" content="Où les trams, bus et métros de la STIB perdent-ils du temps ? Temps passé par véhicule sur chaque tronçon de 30 m, comparaison de périodes et classement du réseau.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -63,6 +63,8 @@ input[type=number] { width:80px; }
 .rk-ex summary { display:block; list-style:none; cursor:default; }
 .rk-ex summary::-webkit-details-marker { display:none; }
 .ph-hint, .tbl .u, .tbl .str small.ph-x { display:none; }
+/* phone: a tap on a closed row opens it, even on its line badges (links work once the row is open) */
+@media (max-width:600px) { .tbl tr:not(.open) .lines a { pointer-events:none; } }
 .rkopts { display:flex; gap:8px 18px; flex-wrap:wrap; flex-basis:100%; }
 details.more { flex-basis:100%; border-top:1px solid var(--line); padding-top:10px; }
 details.more summary { cursor:pointer; color:var(--ink-2); font-size:14px; }
@@ -178,7 +180,7 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
 <body>
 <div class="top">
   <div class="wrap">
-    <div class="brand"><i>STIB</i>micro-segments</div>
+    <div class="brand"><i>STIB</i>microsegments</div>
     <nav aria-label="Sections">
       <a href="/" data-tab="one">Une ligne</a>
       <a href="/comparer" data-tab="cmp">Comparer</a>
@@ -220,7 +222,7 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
           <div class="opts">
             <div class="fld"><span>Jours</span><div class="dow" id="dow"></div></div>
             <label class="fld"><span>Jours fériés</span><select id="holidays"><option value="exclude">exclus</option><option value="include">inclus</option></select></label>
-            <label class="fld"><span>Référence : soirée</span><select id="ref"><option value="20-23">20 h – 23 h</option><option value="21-23">21 h – 23 h</option></select></label>
+            <label class="fld"><span>Référence : soirée</span><select id="ref"><option value="20-23">20–23 h</option><option value="21-23">21–23 h</option></select></label>
           </div>
         </details>
       </form>
@@ -315,7 +317,10 @@ function badge(l, cls = "lb") {
 }
 function niceName(n) {
   if (!n) return "";
-  return n.toLowerCase().replace(/(^|[\s\-'(])([a-zà-ÿ])/g, (m, a, b) => a + b.toUpperCase()).replace(/ - /g, " – ");
+  return n.toLowerCase().replace(/(^|[\s\-'(])([a-zà-ÿ])/g, (m, a, b) => a + b.toUpperCase()).replace(/ - /g, " – ")
+    .replace(/(?<=\S )(De|Du|Des|La|Le|Les|Et|Aux?|En|Sur)(?= )/g, w => w.toLowerCase())   // particles lowercase, not at the start
+    .replace(/(?<=\S )(L'|D')/g, w => w.toLowerCase())
+    .replace(/\b(Ulb|Vub|Wtc|Uz|Coov|Ceria|Cbr|Rtbf|Vrt)\b/g, w => w.toUpperCase());
 }
 function drawPicker(filter = "") {
   const f = filter.trim().toLowerCase();
@@ -401,7 +406,7 @@ function setTab(t, push) {
   $("lineview").hidden = t === "rank"; $("rankview").hidden = t !== "rank";
   $("single").hidden = t !== "one"; $("double").hidden = t !== "cmp";
   $("go").textContent = t === "cmp" ? "Comparer" : "Afficher";
-  document.title = {one: "Une ligne", cmp: "Comparer deux périodes", rank: "Classement du réseau"}[t] + " · STIB micro-segments";
+  document.title = {one: "Une ligne", cmp: "Comparer deux périodes", rank: "Classement du réseau"}[t] + " · STIB microsegments";
   presets();
 }
 document.querySelectorAll("nav a").forEach(a => a.addEventListener("click", e => {
@@ -444,7 +449,7 @@ function done(el, msg, err) { clearInterval(TIMER); el.className = err ? "err" :
 
 // ---------------------------------------------------------------- coverage summary
 const REASONS = {low_coverage: "flux incomplet", no_data: "pas de données", frozen: "flux figé", holiday: "férié",
-  line_absent: "ligne absente du flux", not_ingested: "pas encore collecté", not_derived: "en préparation", deviation: "déviation"};
+  line_absent: "ligne absente du flux", not_ingested: "non collecté", not_derived: "en préparation", deviation: "déviation"};
 const COL = {ok: "#5fc48a", low_coverage: "#e7a33e", line_absent: "#c0392b", no_data: "#c0392b", not_ingested: "#3a4560", not_derived: "#4f8fd8", holiday: "#8e5bb5", off: "#26324d"};
 function covSummary(days, dows, holidays, label) {
   const sel = days.filter(d => dows.has(d.dow));
@@ -452,9 +457,9 @@ function covSummary(days, dows, holidays, label) {
   const ok = sel.filter(d => cls(d) === "ok").length;
   const by = {};
   for (const d of sel) if (cls(d) !== "ok") (by[cls(d)] ||= []).push(d);
-  const strip = days.map(d => `<i style="background:${dows.has(d.dow) ? COL[cls(d)] || "#c0392b" : COL.off}" title="${d.date} · ${DOW[d.dow]} · ${dows.has(d.dow) ? (cls(d) === "ok" ? "utilisable" : (d.holiday ? d.holiday : REASONS[d.status] || d.status)) : "non sélectionné"}"></i>`).join("");
-  const parts = Object.entries(by).map(([k, v]) => `${v.length} ${REASONS[k] || k}`);
-  return {ok, sel: sel.length, by, html: `<div class="cov">${label ? `<b>${label}</b>` : ""}<span><b>${ok}</b> jour${ok > 1 ? "s" : ""} utilisable${ok > 1 ? "s" : ""} sur ${sel.length}${parts.length ? " (" + parts.join(", ") + ")" : ""}</span><span class="strip">${strip}</span></div>`};
+  const strip = days.map(d => `<i style="background:${dows.has(d.dow) ? COL[cls(d)] || "#c0392b" : COL.off}" title="${d.date} · ${DOW[d.dow]} · ${dows.has(d.dow) ? (cls(d) === "ok" ? "retenu" : (d.holiday ? d.holiday : REASONS[d.status] || d.status)) : "non sélectionné"}"></i>`).join("");
+  const parts = Object.entries(by).map(([k, v]) => `${v.length} ${REASONS[k] || k}${k === "not_ingested" && v.length > 1 ? "s" : ""}`);
+  return {ok, sel: sel.length, by, html: `<div class="cov">${label ? `<b>${label}</b>` : ""}<span><b>${ok}</b> jour${ok > 1 ? "s" : ""} retenu${ok > 1 ? "s" : ""} sur ${sel.length}${parts.length ? " (" + parts.join(", ") + ")" : ""}</span><span class="strip">${strip}</span></div>`};
 }
 function covNotes(sum, from, to) {
   const notes = [];
@@ -463,7 +468,9 @@ function covNotes(sum, from, to) {
     const ms = [...new Set(nd.map(d => d.date.slice(0, 7)))].map(fmonth);
     notes.push(`<div class="notice info"><b>Données en cours de préparation.</b> Les signalements de ${ms.join(", ")} sont collectés mais pas encore calculés${sum.ok ? " : ces jours-là sont laissés de côté pour l'instant" : ""}. Le calcul tourne en arrière-plan ; réessayez dans quelques minutes.</div>`);
   }
-  if (ni.length && ni.length === sum.sel) notes.push(`<div class="notice"><b>Pas encore de données</b> pour cette période : la collecte va jusqu'au ${fdate(INFO.ingested.to)}.</div>`);
+  if (ni.length && ni.length === sum.sel) notes.push(INFO.ingested.from && to < INFO.ingested.from
+    ? `<div class="notice"><b>Pas de données</b> pour cette période : la collecte commence le ${fdate(INFO.ingested.from)}.</div>`
+    : `<div class="notice"><b>Pas encore de données</b> pour cette période : la collecte va jusqu'au ${fdate(INFO.ingested.to)}.</div>`);
   return notes.join("");
 }
 
@@ -513,9 +520,9 @@ async function runLine() {
       for (const [k, v] of Object.entries(s.by)) (merged.by[k] ||= []).push(...v);
       if (!s.ok) usable = false;
     });
-    $("notes").innerHTML = html + covNotes(merged);
+    $("notes").innerHTML = html + covNotes(merged, null, periods.map(x => x[2]).sort().pop());
     if (!usable) {
-      done($("status"), "Aucun jour utilisable : choisissez une autre période ou d'autres jours.", true);
+      done($("status"), "Aucun jour retenu : choisissez une autre période ou d'autres jours.", true);
       $("view").innerHTML = ""; $("go").disabled = false; return;
     }
     await showFrame(p, me, elapsed);
@@ -543,7 +550,7 @@ function showFrame(p, me, elapsed) {
       settled = true;
       if (me !== RUN) return resolve();
       if (ev.data.ms === "error") { done($("status"), esc(ev.data.message), true); $("view").innerHTML = ""; }
-      else done($("status"), `Ligne ${esc(p.get("line"))} · prêt en ${nf(elapsed(), 1)} s`);
+      else done($("status"), "");
       resolve();
     };
     window.addEventListener("message", onMsg);
@@ -635,7 +642,7 @@ function drawRank(R) {
   $("rout").innerHTML = `
     <p class="rk-sum">Du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b>, ${daysTxt}, ${modeTxt} (${R.lines_used} lignes) :
       les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> entre les arrêts par rapport à la soirée (20–23 h),
-      soit environ <b>${nf(top * R.days_per_year / 1000, 1)} milliers d'heures par an</b>.</p>
+      soit environ <b>${nf(Math.round(top * R.days_per_year / 100) * 100, 0)} heures par an</b>.</p>
     <div class="tiles">
       <div class="tile"><b>${nf(S[0].veh_h_day, 1)} h</b><span>par jour sur le tronçon n° 1, ${esc(S[0].from)} → ${esc(S[0].to)}</span></div>
       <div class="tile"><b>${nf(top, 0)} h</b><span>par jour sur les ${S.length} premiers tronçons</span></div>
@@ -644,13 +651,13 @@ function drawRank(R) {
     </div>
     <div class="rkgrid">
       <div class="mapcol"><div id="rkmap"></div></div>
-      <div><p class="ph-hint">Touchez un tronçon pour le voir sur la carte et lire le détail.</p><table class="tbl"><thead><tr><th>#</th><th>Tronçon et lignes</th><th style="text-align:right">h-véh. / jour</th><th style="text-align:right">par an</th><th style="text-align:right" title="secondes perdues par véhicule, par rapport à la soirée (20–23 h)">s / véhicule</th></tr></thead>
+      <div><table class="tbl"><thead><tr><th>#</th><th>Tronçon et lignes</th><th style="text-align:right">h-véh. / jour</th><th style="text-align:right">par an</th><th style="text-align:right" title="secondes perdues par véhicule, par rapport à la soirée (20–23 h)">s / véhicule</th></tr></thead>
       <tbody>${S.map((s, i) => `<tr data-i="${i}">
         <td class="rk">${s.rank}</td>
         <td class="str"><b>${esc(s.from)} → ${esc(s.to)}</b>
           <small>${nf(s.len_m)} m · ${nf(s.passages_day)} passages / jour</small>
           <small class="ph-x">${nf(s.veh_h_year)} h-véh. par an · ${nf(s.s_per_passage, 0)} s perdues par véhicule</small>
-          <div class="lines">${s.lines.map(x => `<a href="/?line=${encodeURIComponent(x.line)}&from=${q.first}&to=${q.last}&dow=${q.dow.join(",")}" title="Ligne ${esc(x.line)} : ${nf(x.veh_h_day, 1)} h / jour, ${PEAK[x.peak] || ""}${x.reason ? " · " + RREASON_LONG[x.reason] : ""}">${lb(x)}</a>`).join("")}</div>
+          <div class="lines">${s.lines.map(x => `<a href="/?line=${encodeURIComponent(x.line)}&from=${q.first}&to=${q.last}&dow=${q.dow.join(",")}" title="Ligne ${esc(x.line)} : ${nf(Math.max(0, x.veh_h_day), 1)} h / jour, ${PEAK[x.peak] || ""}${x.reason ? " · " + RREASON_LONG[x.reason] : ""}">${lb(x)}</a>`).join("")}</div>
           ${(s.reasons || []).map(r => `<span class="tag" title="${esc(RREASON_LONG[r] || r)}">${esc(RREASON[r] || r)}</span>`).join("")}
           <div class="bar-in" style="width:${Math.max(2, 100 * s.veh_h_day / max)}%"></div></td>
         <td class="n hd">${nf(s.veh_h_day, 1)}<span class="u"> h/j</span></td><td class="n">${nf(s.veh_h_year)}</td><td class="n">${nf(s.s_per_passage, 0)}</td></tr>`).join("")}</tbody></table></div>
@@ -685,7 +692,10 @@ function drawRank(R) {
     selectRow(+tr.dataset.i, true);
   }));
   const exd = document.querySelector("#rout .rk-ex");   // the left-out list folds on phone only
-  if (exd) exd.querySelector("summary").addEventListener("click", e => { if (!PHONE.matches) e.preventDefault(); });
+  if (exd) {
+    exd.querySelector("summary").addEventListener("click", e => { if (!PHONE.matches && exd.open) e.preventDefault(); });
+    PHONE.onchange = () => { const d = document.querySelector("#rout .rk-ex"); if (d) d.open = !PHONE.matches; };
+  }
 }
 function selectRow(i, zoom) {
   document.querySelectorAll("#rout tbody tr").forEach(tr => tr.classList.toggle("sel", +tr.dataset.i === i));

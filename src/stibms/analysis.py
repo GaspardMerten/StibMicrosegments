@@ -224,7 +224,7 @@ def _relabel_holidays(excluded: list[dict], holidays: dict) -> None:
 
 SHOW_HOTSPOTS = False     # the site does not show the package's hotspots (page option show_hotspots)
 # page options: the platform page has its own direction control (Sens) and no method section
-EMBED = {"dir_control": False, "method": False}
+EMBED = {"dir_control": False, "method": False, "host_controls": True}
 
 
 def contract(r: Run) -> dict:
