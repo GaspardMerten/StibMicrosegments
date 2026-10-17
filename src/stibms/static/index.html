@@ -728,8 +728,8 @@ $("notes").addEventListener("click", e => {
 // ---------------------------------------------------------------- route changes in the period
 // /api/versions: per direction, the main route versions; the reference is the one with the most stops.
 // A change period lists, per direction, the stops it drops or adds, or, with the reference's stops, its
-// detours and moved stops (``detours``: a link longer or shorter by hundreds of metres); its buttons show it in the frame
-// ({ms: "ver", uid}) or add its days to the excluded periods.
+// detours and moved stops (``detours``: a link longer or shorter by hundreds of metres); its button adds its days to
+// the excluded periods.
 let ROUTES = null, RGROUPS = [];
 function changeTxt(x) {
   const list = a => a.slice(0, 3).map(esc).join(", ") + (a.length > 3 ? "…" : "");
@@ -755,21 +755,15 @@ function drawRoutes() {
   const g = new Map();
   for (const x of changed) { const k = x.first + ".." + x.last; if (!g.has(k)) g.set(k, []); g.get(k).push(x); }
   RGROUPS = [...g.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([k, xs]) => ({a: k.split("..")[0], b: k.split("..")[1], xs}));
-  if (refs.length) RGROUPS.push({a: refs[0].first, b: refs[0].last, xs: refs});
   $("routes").innerHTML = `<div class="routes"><b>Changements de tracé sur la période</b><ul>${RGROUPS.map((gr, i) => {
-    const ch = gr.xs.filter(x => !x.ref), ex = XL.covers(gr.a, gr.b);
-    const what = ch.length ? ch.map(x => (ndir > 1 ? `vers ${esc(refTo(x.direction_id))} : ` : "") + changeTxt(x)).join(" · ") : "tracé de référence";
-    // compare: the frame shows the comparison, not one route version
-    return `<li><span><b>${fspan(gr.a, gr.b)}</b> · ${what}</span><span class="acts">${TAB === "cmp" ? "" : `<button type="button" class="mini" data-show="${i}">Voir ce tracé</button>`}${ch.length
-      ? `<button type="button" class="mini" data-excl="${i}"${ex ? " disabled" : ""}>${ex ? "Période exclue" : "Exclure cette période"}</button>` : ""}</span></li>`;
+    const ex = XL.covers(gr.a, gr.b);
+    const what = gr.xs.map(x => (ndir > 1 ? `vers ${esc(refTo(x.direction_id))} : ` : "") + changeTxt(x)).join(" · ");
+    return `<li><span><b>${fspan(gr.a, gr.b)}</b> · ${what}</span><span class="acts"><button type="button" class="mini" data-excl="${i}"${ex ? " disabled" : ""}>${ex ? "Période exclue" : "Exclure cette période"}</button></span></li>`;
   }).join("")}</ul></div>`;
 }
 $("routes").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
-  if (b.dataset.show != null) {
-    const xs = RGROUPS[+b.dataset.show].xs, x = xs.find(y => y.direction_id === DIR) || xs[0];
-    if (FRAME && FRAME.contentWindow) { FRAME.contentWindow.postMessage({ms: "ver", uid: x.pattern_uid}, "*"); FRAME.scrollIntoView({behavior: "smooth", block: "start"}); }
-  } else if (b.dataset.excl != null) {
+  if (b.dataset.excl != null) {
     const gr = RGROUPS[+b.dataset.excl];
     XL.add(gr.a, gr.b); $("fmore").open = true; runLine();
   }
