@@ -6,7 +6,7 @@
 
 - ``cube.parquet``: per (line, service_date, link_key) the observations (each weighted by its hour's
   real seconds per poll / ``TICK_S``, see :func:`report_weight`) and passages of the line's
-  vehicles in four hour bands (day 6-21 h, evening 20-23 h = the reference, am 7-10 h, pm 16-19 h),
+  vehicles in four hour bands (day 6-21 h, evening 20-24 h, i.e. 20:00-23:59 = the reference, am 7-10 h, pm 16-19 h),
   observations split by zone (``_r`` running = between stops, ``_s`` stop zone = from where the feed
   switches to the stop to its exit mark, as on the line page, see ``stibms.stopzones``) and, for day and evening, the observations that belong
   to a long stand (``l_``: the vehicle did not move for >= ``LONG_STAND_S``). Only usable hours are
@@ -45,7 +45,7 @@ log = logging.getLogger("stibms.linkcube")
 STAND_MOVE_M = 8.0
 STAND_GAP_S = 90
 LONG_STAND_S = 180
-BANDS = {"day": (6, 21), "eve": (20, 23), "am": (7, 10), "pm": (16, 19)}
+BANDS = {"day": (6, 21), "eve": (20, 24), "am": (7, 10), "pm": (16, 19)}
 LONG_BANDS = ("day", "eve")
 DAY_HOURS = (6, 21)
 

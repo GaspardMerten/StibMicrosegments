@@ -6,7 +6,7 @@
 Any window is a sum over the monthly link cubes (``stibms.linkcube``, written by the derive): per line
 and link, observations and passages of the usable hours, by hour band and zone. Per (line, link):
 
-    excess per passage  E = (obs_day / pas_day - obs_eve / pas_eve) x tick_s     (evening 20-23 h = reference)
+    excess per passage  E = (obs_day / pas_day - obs_eve / pas_eve) x tick_s     (evening 20-24 h = reference)
     vehicle time lost   E x pas_day / D                                          (D = usable days of the line)
 
 which equals the line page's sum over the link's 30 m segments of excess x passages (same ratios of
@@ -46,7 +46,7 @@ from .linkcube import rel as cube_rel
 
 log = logging.getLogger("stibms.ranking")
 MODES = ("all", "tram", "bus", "metro")
-RANK_VERSION = 3      # bump when the ranking changes meaning (new cache keys)
+RANK_VERSION = 4      # bump when the ranking changes meaning (new cache keys)
 DEFAULT_PTR = f"results/v{ALGO_VERSION}/ranking-default.json"
 TICK_S = 20.0
 MIN_DAYS = 5          # links seen on fewer usable days are left out (a short detour otherwise tops the list)
@@ -67,7 +67,7 @@ class RankQuery:
     terminus: bool = False               # include termini and regulation points
     stops: bool = False                  # include the stop zones
     school: str = "include"              # days left out on purpose, as the line page (stibms.schedule)
-    reduced: str = "include"
+    reduced: str = "exclude"             # strikes left out by default
     exclude: tuple = ()
 
     def __post_init__(self):

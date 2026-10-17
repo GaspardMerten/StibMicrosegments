@@ -126,8 +126,15 @@ details.more .opts { display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:10p
 .mini:disabled { opacity:.55; cursor:default; }
 .mini:focus-visible { outline:2px solid #fff; outline-offset:2px; }
 /* excluded days: categories + periods */
-.xcat { display:flex; gap:0 14px; flex-wrap:wrap; }
-.xper { display:flex; flex-direction:column; gap:6px; }
+.xbox { display:flex; flex-direction:column; gap:0; border:1px solid var(--line); border-radius:10px; padding:2px 12px; background:var(--surface); }
+.xrow { display:flex; flex-wrap:wrap; align-items:center; gap:2px 12px; padding:2px 0; border-top:1px solid var(--line); }
+.xrow:first-child { border-top:0; }
+.xrow .check { color:var(--ink); min-width:13em; }
+.xrow small { color:var(--ink-3); font-size:13px; }
+.xper { display:flex; flex-direction:column; gap:6px; padding:0 0 8px 24px; flex-basis:100%; }
+.xsum { color:var(--ink); }
+.dq .xnote { display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; font-size:14px; color:var(--ink-2); margin:0 0 6px; }
+.dq .xnote b { color:var(--ink); font-weight:600; }
 .xchips { display:flex; flex-wrap:wrap; gap:6px; }
 .xchip { display:inline-flex; align-items:center; gap:2px; border:1px solid var(--line); border-radius:999px; padding:1px 2px 1px 10px; font-size:13px; color:var(--ink); background:var(--surface-2); }
 .xchip button { border:0; background:none; color:var(--ink-3); cursor:pointer; width:26px; height:26px; border-radius:50%; font-size:16px; line-height:1; }
@@ -241,11 +248,10 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
         <button class="go" id="go" type="submit">Afficher</button>
         <div class="presets" id="presets" style="flex-basis:100%"></div>
         <details class="more" id="fmore">
-          <summary>Options : jours, exclusions</summary>
+          <summary>Options (jours, jours exclus) · <span class="xsum" id="xsum"></span></summary>
           <div class="opts">
             <div class="fld"><span>Jours</span><div class="dow" id="dow"></div></div>
-            <div class="fld"><span>Exclure</span><div class="xcat" id="xcat"></div></div>
-            <div class="fld"><span>Périodes exclues</span><div class="xper" id="xper"></div></div>
+            <div class="fld"><span>Jours exclus</span><div class="xbox" id="xbox"></div></div>
           </div>
         </details>
       </form>
@@ -270,11 +276,10 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
           <label class="check"><input type="checkbox" id="rterm"> Inclure les terminus et les attentes pour l'horaire</label>
         </div>
         <details class="more" id="rmore">
-          <summary>Options : jours, exclusions</summary>
+          <summary>Options (jours, jours exclus) · <span class="xsum" id="rxsum"></span></summary>
           <div class="opts">
             <div class="fld"><span>Jours</span><div class="dow" id="rdow"></div></div>
-            <div class="fld"><span>Exclure</span><div class="xcat" id="rxcat"></div></div>
-            <div class="fld"><span>Périodes exclues</span><div class="xper" id="rxper"></div></div>
+            <div class="fld"><span>Jours exclus</span><div class="xbox" id="rxbox"></div></div>
           </div>
         </details>
       </form>
@@ -336,22 +341,33 @@ function dowSet(el, s) {
   el.querySelectorAll("input").forEach(i => i.checked = set.has(+i.value));
 }
 
-// ---------------------------------------------------------------- excluded days (categories + periods)
-// API defaults: holidays excluded, school holidays and strikes included, no period
-const XCATS = [["holidays", "Jours fériés", ""], ["school", "Vacances scolaires", "Jours où la STIB roule en horaire de vacances"],
-  ["reduced", "Grèves", "Jours où la STIB prévoit un service réduit"]];
+// ---------------------------------------------------------------- excluded days: one block, one row per category
+// API defaults: public holidays and strikes (reduced service) excluded, school holidays included, no period.
+// The same block on the line page and the ranking; "Exclure cette période" (route changes) adds to its periods.
+const XCATS = [["holidays", "Jours fériés", "Jours fériés belges"],
+  ["reduced", "Grèves / service réduit", "Jours où la STIB prévoit un service réduit"],
+  ["school", "Vacances scolaires", "Jours où la STIB roule en horaire de vacances"],
+  ["periods", "Périodes", "Vos propres périodes, ajoutées ci-dessous"]];
+const XDEF = {holidays: true, reduced: true, school: false, periods: false};
+const XWORD = {holidays: "fériés", reduced: "grèves", school: "vacances scolaires"};
 const MON3 = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
 const fday = (s, y) => { const d = new Date(s + "T12:00:00Z"); return `${d.getUTCDate() === 1 ? "1er" : d.getUTCDate()} ${MON3[d.getUTCMonth()]}${y ? " " + d.getUTCFullYear() : ""}`; };
 const fspan = (a, b) => a === b ? fday(a, true) : `${fday(a, a.slice(0, 4) !== b.slice(0, 4))} → ${fday(b, true)}`;
-function makeExcl(cat, per) {
+const andList = a => a.length > 1 ? a.slice(0, -1).join(", ") + " et " + a[a.length - 1] : a.join("");
+function makeExcl(el, sumEl) {
   let P = [];
-  cat.innerHTML = XCATS.map(([k, t, h]) => `<label class="check"${h ? ` title="${h}"` : ""}><input type="checkbox" value="${k}"${k === "holidays" ? " checked" : ""}> ${t}</label>`).join("");
-  per.innerHTML = `<div class="xchips"></div><div class="dates"><input type="date" aria-label="Exclure du"><em>→</em><input type="date" aria-label="au"><button type="button" class="mini">Ajouter</button></div>`;
+  el.innerHTML = XCATS.map(([k, t, h]) => `<div class="xrow"><label class="check"><input type="checkbox" value="${k}"${XDEF[k] ? " checked" : ""}> ${t}</label><small>${h}</small>${k === "periods"
+    ? `<div class="xper"><div class="xchips"></div><div class="dates"><input type="date" aria-label="Exclure du"><em>→</em><input type="date" aria-label="au"><button type="button" class="mini">Ajouter</button></div></div>` : ""}</div>`).join("");
+  const per = el.querySelector(".xper");
   const chips = per.querySelector(".xchips"), [ia, ib] = per.querySelectorAll("input"), add = per.querySelector("button");
-  const box = k => cat.querySelector(`input[value=${k}]`);
+  const box = k => el.querySelector(`input[value=${k}]`);
+  const usedP = () => box("periods").checked ? P : [];
   const draw = () => {
     chips.hidden = !P.length;
     chips.innerHTML = P.map(([a, b], i) => `<span class="xchip">${fspan(a, b)}<button type="button" data-i="${i}" aria-label="Ne plus exclure ${fspan(a, b)}">×</button></span>`).join("");
+    box("periods").disabled = !P.length;
+    if (!P.length) box("periods").checked = false;
+    sumEl.textContent = X.text();
   };
   const norm = () => {      // sorted, overlapping or adjacent periods merged
     const out = [];
@@ -364,35 +380,43 @@ function makeExcl(cat, per) {
   chips.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; P.splice(+b.dataset.i, 1); draw(); });
   ia.addEventListener("change", () => { if (ia.value && (!ib.value || ib.value < ia.value)) ib.value = ia.value; });
   add.addEventListener("click", () => { if (!ia.value) return; X.add(ia.value, ib.value || ia.value); ia.value = ib.value = ""; });
+  el.addEventListener("change", e => { if (e.target.type === "checkbox") draw(); });
   const X = {
-    add(a, b) { if (b < a) [a, b] = [b, a]; P.push([a, b]); norm(); draw(); },
-    covers: (a, b) => P.some(([x, y]) => x <= a && b <= y),
+    add(a, b) { if (b < a) [a, b] = [b, a]; P.push([a, b]); norm(); box("periods").checked = true; draw(); },
+    covers: (a, b) => usedP().some(([x, y]) => x <= a && b <= y),
     on: k => box(k).checked,
     setRange(min, max) { for (const i of [ia, ib]) { i.min = min || ""; i.max = max || ""; } },
+    // what is left out, in words ("hors fériés et grèves"): under the form and in the quality block
+    text() {
+      const w = ["holidays", "reduced", "school"].filter(k => X.on(k)).map(k => XWORD[k]);
+      const n = usedP().length;
+      if (n) w.push(`${n} période${n > 1 ? "s" : ""}`);
+      return w.length ? "hors " + andList(w) : "aucun jour exclu";
+    },
     // the API parameters that differ from its defaults
     params(p) {
       if (!X.on("holidays")) p.set("holidays", "include");
+      if (!X.on("reduced")) p.set("reduced", "include");
       if (X.on("school")) p.set("school", "exclude");
-      if (X.on("reduced")) p.set("reduced", "exclude");
-      if (P.length) p.set("exclude", P.map(([a, b]) => a === b ? a : `${a}..${b}`).join(","));
+      if (usedP().length) p.set("exclude", P.map(([a, b]) => a === b ? a : `${a}..${b}`).join(","));
       return p;
     },
     // from URL parameters; true when something differs from the defaults
     load(u) {
       box("holidays").checked = u.get("holidays") !== "include";
+      box("reduced").checked = u.get("reduced") !== "include";
       box("school").checked = u.get("school") === "exclude";
-      box("reduced").checked = u.get("reduced") === "exclude";
       // real dates only (2025-02-30 is dropped), each period in order
       const real = d => /^\d{4}-\d\d-\d\d$/.test(d) && !isNaN(new Date(d + "T12:00:00Z")) && iso(new Date(d + "T12:00:00Z")) === d;
       P = (u.get("exclude") || "").split(",").map(x => x.split("..")).filter(p => p.length <= 2 && p.every(real))
         .map(([a, b = a]) => [a, b]).filter(([a, b]) => a <= b);
-      norm(); draw();
-      return !box("holidays").checked || box("school").checked || box("reduced").checked || P.length > 0;
+      norm(); box("periods").checked = P.length > 0; draw();
+      return XCATS.some(([k]) => X.on(k) !== XDEF[k]);
     },
     // why a day of /api/coverage is left out on purpose (the API's order), or null; frozen at the
     // time of the call (a run keeps the choices it was started with)
     reasonFn() {
-      const on = Object.fromEntries(XCATS.map(([k]) => [k, X.on(k)])), per = P.map(p => p.slice());
+      const on = Object.fromEntries(XCATS.map(([k]) => [k, X.on(k)])), per = usedP().map(p => p.slice());
       return d => {
         if (d.holiday && on.holidays) return "holiday";
         if (d.service === "reduced_service" && on.reduced) return "reduced_service";
@@ -404,7 +428,7 @@ function makeExcl(cat, per) {
   draw();
   return X;
 }
-const XL = makeExcl($("xcat"), $("xper")), XR = makeExcl($("rxcat"), $("rxper"));
+const XL = makeExcl($("xbox"), $("xsum")), XR = makeExcl($("rxbox"), $("rxsum"));
 
 // ---------------------------------------------------------------- lines
 const lineOf = id => LINES.find(l => l.line === id);
@@ -526,7 +550,7 @@ function lineParams() {
   if (TAB === "cmp") { p.set("a", `${$("a1").value}..${$("a2").value}`); p.set("b", `${$("b1").value}..${$("b2").value}`); }
   else { p.set("from", $("from").value); p.set("to", $("to").value); }
   p.set("dow", dowGet($("dow")));
-  // segments are always 30 m and the reference 20-23 h on the site (the API still takes seg= and ref=)
+  // segments are always 30 m and the reference 20-24 h (20:00-23:59) on the site (the API still takes seg= and ref=)
   return XL.params(p);
 }
 
@@ -599,7 +623,8 @@ function drawQuality() {
   const legend = LEGEND.filter(([k]) => seen.has(colOf(k))).map(([k, t]) => `<span><i style="background:${colOf(k)}"></i>${t}</span>`).join("");
   const merged = {ok: 0, sel: 0, by: {}};
   for (const c of covs) { merged.ok += c.ok; merged.sel += c.sel; for (const [k, v] of Object.entries(c.by)) (merged.by[k] ||= []).push(...v); }
-  $("notes").innerHTML = `<div class="dq">${covs.map(c => c.html).join("")}${nums}<div class="legend">${legend}</div></div>` + covNotes(merged);
+  const xnote = `<div class="xnote"><span>Analyse <b>${esc(QUAL.xtxt)}</b> (jours exclus dans les options)</span><button type="button" class="mini" data-xopen>Modifier</button></div>`;
+  $("notes").innerHTML = `<div class="dq">${xnote}${covs.map(c => c.html).join("")}${nums}<div class="legend">${legend}</div></div>` + covNotes(merged);
   return covs;
 }
 function covNotes(sum) {
@@ -647,7 +672,7 @@ async function runLine() {
   const elapsed = busy($("status"), TAB === "cmp" ? `Comparaison de la ligne ${esc(line)}` : `Calcul de la ligne ${esc(line)}`,
     TAB === "cmp" ? "une comparaison prend jusqu'à une minute la première fois" : "la première fois, quelques mois prennent 10 à 40 s");
   try {
-    const dows = dowsSel(), reason = XL.reasonFn();     // as when the run starts, whatever the form says later
+    const dows = dowsSel(), reason = XL.reasonFn(), xtxt = XL.text();     // as when the run starts, whatever the form says later
     const periods = TAB === "cmp" ? [["A", $("a1").value, $("a2").value], ["B", $("b1").value, $("b2").value]] : [["", $("from").value, $("to").value]];
     for (const [, a, b] of periods) if (!a || !b || a > b) throw new Error("Choisissez des dates de début et de fin dans l'ordre.");
     const L = encodeURIComponent(line);
@@ -656,7 +681,7 @@ async function runLine() {
     getJSON(`/api/versions?line=${L}&from=${span[0]}&to=${span[1]}`).then(r => { if (me === RUN) { ROUTES = r.body.versions || []; drawRoutes(); } }).catch(() => {});
     const covs = await Promise.all(periods.map(([, a, b]) => getJSON(`/api/coverage?line=${L}&from=${a}&to=${b}`)));
     if (me !== RUN) return;
-    QUAL = {periods: covs.map((c, i) => [periods[i][0], c.body.days]), dows, reason, sum: null};
+    QUAL = {periods: covs.map((c, i) => [periods[i][0], c.body.days]), dows, reason, xtxt, sum: null};
     const usable = drawQuality().every(c => c.ok > 0);
     if (!usable) {
       done($("status"), "Aucun jour retenu : choisissez une autre période ou d'autres jours.", true);
@@ -695,10 +720,15 @@ function showFrame(p, me, elapsed) {
   });
 }
 $("f").addEventListener("submit", e => { e.preventDefault(); runLine(); });
+$("notes").addEventListener("click", e => {
+  if (!e.target.closest("[data-xopen]")) return;
+  $("fmore").open = true; $("fmore").scrollIntoView({behavior: "smooth", block: "center"});
+});
 
 // ---------------------------------------------------------------- route changes in the period
 // /api/versions: per direction, the main route versions; the reference is the one with the most stops.
-// A change period lists, per direction, the stops it drops or adds; its buttons show it in the frame
+// A change period lists, per direction, the stops it drops or adds, or, with the reference's stops, its
+// detours and moved stops (``detours``: a link longer or shorter by hundreds of metres); its buttons show it in the frame
 // ({ms: "ver", uid}) or add its days to the excluded periods.
 let ROUTES = null, RGROUPS = [];
 function changeTxt(x) {
@@ -707,12 +737,17 @@ function changeTxt(x) {
   const out = [];
   if (x.removed.length) out.push(`${n(x.removed.length, "en moins")} : ${list(x.removed)}`);
   if (x.added.length) out.push(`${x.removed.length ? `${x.added.length} en plus` : n(x.added.length, "en plus")} : ${list(x.added)}`);
-  return out.join(" ; ");
+  const m = v => `${v > 0 ? "+" : "−"}${nf(Math.abs(v))} m`;
+  for (const t of x.detours || []) out.push(t.kind === "moved_stop"
+    ? `arrêt ${esc(t.stop)} déplacé (${nf(t.delta_m)} m)`
+    : `détour entre ${esc(t.from)} et ${esc(t.to)} (${m(t.delta_m)})`);
+  const s = out.join(" ; ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 function drawRoutes() {
   const v = ROUTES || [];
-  // versions with the reference's stops (shape edits) are not a change
-  const changed = v.filter(x => x.removed.length || x.added.length);
+  // versions with the reference's stops are a change only with a detour or a moved stop (else: shape edits)
+  const changed = v.filter(x => x.removed.length || x.added.length || (x.detours || []).length);
   if (!changed.length) { $("routes").innerHTML = ""; return; }
   const ndir = new Set(v.map(x => x.direction_id)).size;
   const refs = v.filter(x => x.ref);
@@ -791,7 +826,7 @@ $("rtop").addEventListener("change", runRank);
 
 // ranking intro: time lost compared with the evening, per vehicle, between stops
 function rlede(termIn) {
-  return "Les tronçons du réseau où les véhicules STIB perdent le plus de temps par rapport à la soirée (20–23 h), entre les arrêts, de 6 h à 21 h. Les lignes qui partagent un tronçon s'additionnent"
+  return "Les tronçons du réseau où les véhicules STIB perdent le plus de temps par rapport à la soirée (20 h–minuit), entre les arrêts, de 6 h à 21 h. Les lignes qui partagent un tronçon s'additionnent"
     + (termIn ? "." : " ; terminus et attentes pour l'horaire exclus.");
 }
 $("rlede").textContent = rlede(false);
@@ -828,7 +863,7 @@ function drawRank(R) {
   const ex = R.excluded || {n: 0, top: []};
   $("rout").innerHTML = `
     <p class="rk-sum">Du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b>, ${daysTxt}${exTxt}, ${modeTxt} (${R.lines_used} lignes) :
-      les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> entre les arrêts par rapport à la soirée (20–23 h),
+      les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> entre les arrêts par rapport à la soirée (20 h–minuit),
       soit environ <b>${nf(Math.round(top * R.days_per_year / 100) * 100, 0)} heures par an</b>.</p>
     <div class="tiles">
       <div class="tile"><b>${nf(S[0].veh_h_day, 1)} h</b><span>par jour sur le tronçon n° 1, ${esc(S[0].from)} → ${esc(S[0].to)}</span></div>
@@ -838,7 +873,7 @@ function drawRank(R) {
     </div>
     <div class="rkgrid">
       <div class="mapcol"><div id="rkmap"></div></div>
-      <div><table class="tbl"><thead><tr><th>#</th><th>Tronçon et lignes</th><th style="text-align:right">h-véh. / jour</th><th style="text-align:right">par an</th><th style="text-align:right" title="secondes perdues par véhicule, par rapport à la soirée (20–23 h)">s / véhicule</th></tr></thead>
+      <div><table class="tbl"><thead><tr><th>#</th><th>Tronçon et lignes</th><th style="text-align:right">h-véh. / jour</th><th style="text-align:right">par an</th><th style="text-align:right" title="secondes perdues par véhicule, par rapport à la soirée (20 h–minuit)">s / véhicule</th></tr></thead>
       <tbody>${S.map((s, i) => `<tr data-i="${i}">
         <td class="rk">${s.rank}</td>
         <td class="str"><b>${esc(s.from)} → ${esc(s.to)}</b>
@@ -851,7 +886,7 @@ function drawRank(R) {
     </div>
     ${ex.n ? `<details class="rk-ex"${PHONE.matches ? "" : " open"}><summary><b>${nf(ex.n)} tronçon${ex.n > 1 ? "s" : ""} laissé${ex.n > 1 ? "s" : ""} de côté</b> (${nf(ex.veh_h_day, 0)} h-véh. / jour)<span class="ex-why"> : terminus ou attente volontaire pour l'horaire, pas un ralentissement. Les principaux :</span></summary>
       <ul>${ex.top.map(x => `<li>${esc(x.from)} → ${esc(x.to)} (${x.lines.map(y => esc(y.line)).join(", ")}) : ${nf(x.veh_h_day, 1)} h / jour, ${nf(x.s_per_passage, 0)} s perdues par véhicule · ${x.reasons.map(r => esc(RREASON_LONG[r] || r)).join(" ; ")}</li>`).join("")}</ul></details>` : ""}
-    <p class="method">Toutes les 20 secondes, chaque véhicule STIB signale sa position ; sur chaque tronçon de 30 m, 1 signalement ≈ 20 s passées là. Temps perdu par rapport à la soirée (20–23 h, mêmes jours) par véhicule, × passages de 6 h à 21 h = temps perdu par jour. Zones d'arrêt (là où la STIB rattache le véhicule à l'arrêt, de son approche à son départ) et jours au flux incomplet exclus, comme les jours exclus dans les options (jours fériés par défaut). Par an : × ${R.days_per_year} jours (ordre de grandeur).</p>`;
+    <p class="method">Toutes les 20 secondes, chaque véhicule STIB signale sa position ; sur chaque tronçon de 30 m, 1 signalement ≈ 20 s passées là. Temps perdu par rapport à la soirée (20 h–minuit, mêmes jours) par véhicule, × passages de 6 h à 21 h = temps perdu par jour. Zones d'arrêt (là où la STIB rattache le véhicule à l'arrêt, de son approche à son départ) et jours au flux incomplet exclus, comme les jours exclus dans les options (jours fériés et grèves par défaut). Par an : × ${R.days_per_year} jours (ordre de grandeur).</p>`;
   if (RMAP) { RMAP.remove(); RMAP = null; }
   RMAP = L.map("rkmap", {scrollWheelZoom: false});
   L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",

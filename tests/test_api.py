@@ -79,7 +79,8 @@ def test_analysis_contract(client):
     r = client.get(f"/api/analysis?{Q}&dow=0-6")
     assert r.status_code == 200, r.text
     assert r.headers["x-cache"] == "computed"
-    assert "max-age=3600" in r.headers["cache-control"]
+    # strikes are excluded by default: they depend on later feeds, so the period is not cached long yet
+    assert "max-age=300" in r.headers["cache-control"]
     c = r.json()
     assert c["v"] == 1 and c["line"] == "S1" and c["dirs"]
     ex = {e["date"]: e["reason"] for e in c["period"]["excluded"]}
@@ -397,5 +398,6 @@ def test_daytrips_cache(derived_root):
 
 def test_schedule_cache_control(client):
     # school holidays depend on feeds up to 90 days after the period: not cacheable for long yet
-    assert "max-age=3600" in client.get(f"/api/analysis?{Q}&dow=0-6").headers["cache-control"]
-    assert "max-age=300" in client.get(f"/api/analysis?{Q}&dow=0-6&school=exclude").headers["cache-control"]
+    assert "max-age=3600" in client.get(f"/api/analysis?{Q}&dow=0-6&reduced=include").headers["cache-control"]
+    assert "max-age=300" in client.get(f"/api/analysis?{Q}&dow=0-6&reduced=include&school=exclude").headers["cache-control"]
+    assert "max-age=300" in client.get(f"/api/analysis?{Q}&dow=0-6").headers["cache-control"]   # strikes excluded by default

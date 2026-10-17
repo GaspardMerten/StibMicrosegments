@@ -35,11 +35,11 @@ class Query:
     phase: float = 0.0
     grid: str = "stops"                  # "stops" (zones from the feed, see stibms.stopzones) | "equal" | "fixed"
     stopzone: tuple[float, float] = (36.0, 38.0)   # before / after a stop; "stops": after = default exit mark
-    ref: tuple[int, int] = (20, 23)
+    ref: tuple[int, int] = (20, 24)              # evening reference, 20:00-23:59
     hours: tuple[int, int] = (5, 24)
     B: int = 200                         # hotspot bootstrap draws
     school: str = "include"              # STIB school-holiday timetable days (stibms.schedule)
-    reduced: str = "include"             # reduced-service days (strikes)
+    reduced: str = "exclude"             # reduced-service days (strikes), left out by default
     exclude: tuple = ()                  # user periods ((first, last), ...), see schedule.norm_periods
 
     def __post_init__(self):
@@ -70,6 +70,10 @@ class Query:
         return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
+# defaults of the day exclusions, the same on every endpoint (Query, CompareQuery, RankQuery, the API)
+DAY_DEFAULTS = {"school": "include", "reduced": "exclude"}
+
+
 def _check_days(q) -> None:
     for k in ("school", "reduced"):
         if getattr(q, k) not in schedule.CHOICES:
@@ -82,10 +86,11 @@ def _check_days(q) -> None:
 
 
 def _days_canonical(q, d: dict, first: dt.date, last: dt.date) -> dict:
-    """The day-exclusion fields only when set (keys of queries without them are unchanged), user
-    periods clipped to the queried days and merged."""
-    for k in ("school", "reduced"):
-        if d[k] == "include":
+    """The day-exclusion fields only when they differ from their defaults (``DAY_DEFAULTS``: one key
+    per choice, whether the default is spelt out or not), user periods clipped to the queried days
+    and merged."""
+    for k, v in DAY_DEFAULTS.items():
+        if d[k] == v:
             del d[k]
     ex = schedule.norm_periods(q.exclude, first, last)
     if ex:
@@ -325,11 +330,11 @@ class CompareQuery:
     phase: float = 0.0
     grid: str = "stops"
     stopzone: tuple[float, float] = (36.0, 38.0)
-    ref: tuple[int, int] = (20, 23)
+    ref: tuple[int, int] = (20, 24)              # evening reference, 20:00-23:59
     hours: tuple[int, int] = (5, 24)
     B: int = 100                         # bootstrap draws (difference CI and period-B hotspots)
     school: str = "include"
-    reduced: str = "include"
+    reduced: str = "exclude"
     exclude: tuple = ()                  # user periods, applied to both A and B
 
     def __post_init__(self):
@@ -489,10 +494,55 @@ def coverage_days(data: Data, line: str, first: dt.date, last: dt.date) -> list[
     return out
 
 
+# A version with the reference's stops differs by its track only. GTFS shape edits move a link by a
+# few metres to a few tens; a detour moves it by hundreds. Local data (2024-10, 2025-02..05, all lines,
+# incl. 92 in 2025-05 and 7 in 2025-02..05, which have none): shape edits and small platform moves stay
+# under 45 m per link, or 150 m when the next link takes it back (73 International -> Ceria -123 m),
+# and under 1.3 % in total; detours are 254-415 m on one link (54 Ma Campagne -> Trinité +415 m,
+# 58 Vilvoorde Station -> Blokken -261 m). A temporary
+# stop moved along the route lengthens one link and shortens the next by as much (75 Westland Shopping
+# 250 m): runs of changed links are summed, so that is a moved stop, not a detour.
+DETOUR_MIN_M = 150.0      # a run of links is a detour when its length changes by more than ...
+DETOUR_SHARE = 0.20       # ... max(150 m, 20 % of its reference length)
+DETOUR_TOTAL = 0.05       # or the whole route by more than 5 %
+DETOUR_RUN_M = 30.0       # links that changed by more than this form a run (below: shape noise)
+
+
+def _track_changes(ref_len: list[float], len_: list[float], names: list[str]) -> list[dict]:
+    """Detours and moved stops of a version with the reference's stops, from the per-link lengths
+    (``names``: the stops, one more than the links). Each: kind (detour | moved_stop), from, to (the
+    stops around the run), stop (moved_stop), delta_m (length change of the run, or the stop's shift)."""
+    d = [b - a for a, b in zip(ref_len, len_)]
+    out, i, n = [], 0, len(d)
+    big = lambda k, ref: abs(k) > max(DETOUR_MIN_M, DETOUR_SHARE * ref)   # noqa: E731
+    while i < n:
+        if abs(d[i]) <= DETOUR_RUN_M:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and abs(d[j + 1]) > DETOUR_RUN_M:
+            j += 1
+        net, ref = sum(d[i:j + 1]), sum(ref_len[i:j + 1])
+        if big(net, ref):
+            out.append({"kind": "detour", "from": names[i], "to": names[j + 1], "delta_m": round(net)})
+        else:
+            k = max(range(i, j + 1), key=lambda x: abs(d[x]))
+            if big(d[k], ref_len[k]) and k < j:       # one link longer, the next shorter: the stop moved
+                out.append({"kind": "moved_stop", "stop": names[k + 1], "from": names[i], "to": names[j + 1],
+                            "delta_m": round(abs(d[k]))})
+        i = j + 1
+    tot = sum(len_) - sum(ref_len)
+    if not any(x["kind"] == "detour" for x in out) and abs(tot) > DETOUR_TOTAL * sum(ref_len):
+        i = max(range(n), key=lambda x: abs(d[x]))
+        out.append({"kind": "detour", "from": names[i], "to": names[i + 1], "delta_m": round(tot)})
+    return out
+
+
 def versions(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]:
     """Main-pattern versions per direction, with their stop names and what changes against the
     direction's reference (the version with the most stops, the latest on a tie): ``ref`` true on it,
-    ``removed`` / ``added`` stop names elsewhere."""
+    ``removed`` / ``added`` stop names elsewhere, and on a version with the reference's stops its
+    ``detours`` (see :func:`_track_changes`; empty for a shape edit)."""
     from microsegments.report import title_name
     dates = [d for d in date_range(first, last) if d in set(data.ingested_dates())]
     if not dates:
@@ -509,6 +559,7 @@ def versions(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]
         r["first"], r["last"] = r["first"].isoformat(), r["last"].isoformat()
         r["from"], r["to"], r["n_stops"] = (names[0] if names else None), (names[-1] if names else None), len(names)
         r["stops"] = [title_name(n) for n in names]
+        r["_len"] = net.links_of(r["pattern_uid"])["len_m"].to_list()
         out.append(r)
     for dr in {r["direction_id"] for r in out}:
         vs = [r for r in out if r["direction_id"] == dr]
@@ -518,4 +569,8 @@ def versions(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]
             have = set(r["stops"])
             r["removed"] = [] if r["ref"] else [n for n in ref["stops"] if n not in have]
             r["added"] = [] if r["ref"] else [n for n in r["stops"] if n not in set(ref["stops"])]
+            same = not r["ref"] and r["stops"] == ref["stops"] and len(r["_len"]) == len(ref["_len"]) == len(r["stops"]) - 1
+            r["detours"] = _track_changes(ref["_len"], r["_len"], r["stops"]) if same else []
+    for r in out:
+        del r["_len"]
     return out

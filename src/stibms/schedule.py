@@ -283,7 +283,7 @@ def norm_periods(periods, first: dt.date, last: dt.date) -> tuple[tuple[dt.date,
 
 
 def exclusions(data: Data | None, first: dt.date, last: dt.date, holidays: str = "exclude",
-               school: str = "include", reduced: str = "include", periods=()) -> dict[dt.date, tuple[str, str | None]]:
+               school: str = "include", reduced: str = "exclude", periods=()) -> dict[dt.date, tuple[str, str | None]]:
     """date -> (reason, label) of the days of [first, last] left out on purpose. One reason per day,
     the most specific first: public holiday, reduced service, school holiday, then the user's periods."""
     out: dict[dt.date, tuple[str, str | None]] = {}

@@ -9,9 +9,10 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
     GET /api/coverage?line&from&to            per day feed coverage, line observations, holiday, status
     GET /api/versions?line&from&to            GTFS versions (main pattern runs) per direction, with their
                                               stops and the stops removed / added against the reference
-                                              (most stops, latest on a tie: ``ref``)
+                                              (most stops, latest on a tie: ``ref``); with the
+                                              reference's stops, ``detours`` (detours, moved stops)
     GET /api/analysis[.csv|.parquet]?line&from&to&dow&holidays=exclude&seg=30&phase=0&grid=stops
-                                       &stopzone=36,38&ref=20-23&school=include&reduced=include
+                                       &stopzone=36,38&ref=20-24&school=include&reduced=exclude
                                        &exclude=D1..D2,D3
                                               JSON contract (microsegments.contract) / result table
     GET /api/hotspots[.csv|.parquet]?...      hotspot stretches (same parameters)
@@ -26,7 +27,7 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
                                               monthly link cubes: < 1 s for any window.
     Days left out on purpose, on every endpoint taking a period (analysis, hotspots, tune, compare,
     ranking): holidays (public holidays, default exclude), school (STIB school-holiday timetable,
-    default include), reduced (reduced service, strikes, default include), exclude (user periods,
+    default include), reduced (reduced service, strikes, default exclude), exclude (user periods,
     applied to both periods of a comparison). See stibms.schedule; period.excluded gives their
     reasons holiday, school_holiday, reduced_service, user_period.
     GET /api/status                           ingested range, derived months, months pending
@@ -249,9 +250,9 @@ def period(line: str = Q(..., description="line number (GTFS route_short_name)")
 
 def query(line: str = Q(...), from_: str = Q(..., alias="from"), to: str = Q(...),
           dow: str = Q("0-4"), holidays: str = Q("exclude"), seg: float = Q(30.0),
-          phase: float = Q(0.0), grid: str = Q("stops"), stopzone: str = Q("36,38"), ref: str = Q("20-23"),
+          phase: float = Q(0.0), grid: str = Q("stops"), stopzone: str = Q("36,38"), ref: str = Q("20-24", description="evening reference hours a-b, b excluded (20-24 = 20:00-23:59)"),
           school: str = Q("include", description="STIB school-holiday timetable days: exclude | include"),
-          reduced: str = Q("include", description="reduced-service days (strikes): exclude | include"),
+          reduced: str = Q("exclude", description="reduced-service days (strikes): exclude | include"),
           exclude: str = Q("", description="periods left out, D1..D2,D3..D4 (a single date is one day)")):
     from .analysis import Query
     ln, a, b = period(line, from_, to)
@@ -296,7 +297,7 @@ def _gz_response(request: Request, gz: bytes, cc: str, media="application/json",
 
 # Bump when the JSON a result holds changes without the data changing (page options such as
 # show_hotspots, contract fields): older bucket results are then ignored instead of served.
-RESULT_REV = 6
+RESULT_REV = 7
 
 
 def rev() -> str:
@@ -566,7 +567,7 @@ def _range(s: str, name: str) -> tuple[dt.date, dt.date]:
 def compare_query(line: str = Q(...), a: str = Q(..., description="period A (before), YYYY-MM-DD..YYYY-MM-DD"),
                   b: str = Q(..., description="period B (after)"), dow: str = Q("0-4"), holidays: str = Q("exclude"),
                   seg: float = Q(30.0), phase: float = Q(0.0), grid: str = Q("stops"), stopzone: str = Q("36,38"),
-                  ref: str = Q("20-23"), school: str = Q("include"), reduced: str = Q("include"),
+                  ref: str = Q("20-24"), school: str = Q("include"), reduced: str = Q("exclude"),
                   exclude: str = Q("", description="periods left out of both A and B, D1..D2,D3..D4")):
     from .analysis import CompareQuery
     try:
@@ -630,7 +631,7 @@ def _algo() -> int:
 def ranking(request: Request, from_: str | None = Q(None, alias="from"), to: str | None = None,
             dow: str = Q("0-4"), holidays: str = Q("exclude"), mode: str = Q("all"), top: int = Q(50),
             terminus: bool = Q(False), stops: bool = Q(False), school: str = Q("include"),
-            reduced: str = Q("include"), exclude: str = Q("")):
+            reduced: str = Q("exclude"), exclude: str = Q("")):
     from . import ranking as R
     data = state.data
     top = max(5, min(int(top), 200))
