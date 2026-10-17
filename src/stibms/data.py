@@ -323,11 +323,12 @@ class Data:
         return self._cached("derived_months", f, ttl=120)
 
     def month_stamp(self, month: str) -> str:
-        """Derive time of a month ('' when not derived), cached briefly."""
+        """Derive time of a month ('' when not derived) and of its link cube rewrite if any, cached briefly."""
         def f():
             rel = derived(f"_SUCCESS/month={month}.json")
             try:
-                return self.store.read_json(rel).get("written_at", "")
+                rep = self.store.read_json(rel)
+                return rep.get("written_at", "") + rep.get("linkcube_rewritten_at", "")
             except FileNotFoundError:
                 return ""
         return self._cached(f"mstamp:{month}", f, ttl=120)

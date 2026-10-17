@@ -252,8 +252,8 @@ def rewrite_coverage(data: Data, month: str) -> dict:
 
 def rewrite_linkcube(data: Data, month: str) -> dict:
     """Rebuild only the month's link cube from its placed / passages files (e.g. after a change of
-    ``stibms.linkcube``). The derive report's ``written_at`` is kept: line analyses do not read the
-    cube, so their caches stay valid (the ranking does not cache a window without cubes)."""
+    ``stibms.linkcube``). ``linkcube_rewritten_at`` goes into the month's stamp, so cached rankings (and
+    line results) of the month are recomputed."""
     from . import linkcube
     rel = derived(f"_SUCCESS/month={month}.json")
     try:
