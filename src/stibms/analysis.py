@@ -538,11 +538,55 @@ def _track_changes(ref_len: list[float], len_: list[float], names: list[str]) ->
     return out
 
 
+def _group_versions(runs: list[dict]) -> list[dict]:
+    """One route per direction and stop sequence (and, with the reference's stops, per set of detours /
+    moved stops), from the main-pattern runs of ``Network.versions`` (``runs``: in date order per
+    direction, each with ``first``, ``last``, ``n_days``, ``stops`` and the per-link ``_len``). Feed
+    changes and shape edits give several pattern_uids, and a route that comes back gives several runs:
+    they are one route here. ``periods``: its runs, those next to each other merged (runs follow
+    each other over the days with data, so a gap of days without data does not split a period),
+    each with first, last, n_days; ``first`` / ``last`` / ``n_days`` over all of them. The reference
+    is the route of the run with the most stops, the latest on a tie: ``ref`` true on it, ``removed`` /
+    ``added`` stop names elsewhere, and on a route with the reference's stops its ``detours`` (see
+    :func:`_track_changes`; a shape edit has none, so it is the reference)."""
+    out = []
+    for dr in sorted({r["direction_id"] for r in runs}):
+        rs = sorted((r for r in runs if r["direction_id"] == dr), key=lambda r: r["first"])
+        ref = max(rs, key=lambda r: (r["n_stops"], r["last"], r["first"]))
+        groups: dict[tuple, dict] = {}
+        prev = None
+        for r in rs:
+            same = r["stops"] == ref["stops"] and len(r["_len"]) == len(ref["_len"]) == len(r["stops"]) - 1
+            det = _track_changes(ref["_len"], r["_len"], r["stops"]) if same and r is not ref else []
+            key = (tuple(r["stops"]), tuple((t["kind"], t["from"], t["to"], t.get("stop")) for t in det))
+            g = groups.get(key)
+            if g is None:
+                g = groups[key] = {"direction_id": dr, "pattern_uid": r["pattern_uid"], "from": r["from"], "to": r["to"],
+                                   "n_stops": r["n_stops"], "stops": r["stops"], "detours": det, "periods": [], "_best": 0}
+            if key == prev:
+                p = g["periods"][-1]
+                p["last"], p["n_days"] = r["last"], p["n_days"] + r["n_days"]
+            else:
+                g["periods"].append({"first": r["first"], "last": r["last"], "n_days": r["n_days"]})
+            if r["n_days"] > g["_best"]:          # the pattern and detour lengths of its longest run
+                g.update(pattern_uid=r["pattern_uid"], detours=det, _best=r["n_days"])
+            prev = key
+        ref_key = (tuple(ref["stops"]), ())
+        for key, g in groups.items():
+            del g["_best"]
+            g["ref"] = key == ref_key
+            have, refs = set(g["stops"]), set(ref["stops"])
+            g["removed"] = [] if g["ref"] else [n for n in ref["stops"] if n not in have]
+            g["added"] = [] if g["ref"] else [n for n in g["stops"] if n not in refs]
+            g["first"], g["last"] = g["periods"][0]["first"], g["periods"][-1]["last"]
+            g["n_days"] = sum(p["n_days"] for p in g["periods"])
+            out.append(g)
+    return out
+
+
 def versions(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]:
-    """Main-pattern versions per direction, with their stop names and what changes against the
-    direction's reference (the version with the most stops, the latest on a tie): ``ref`` true on it,
-    ``removed`` / ``added`` stop names elsewhere, and on a version with the reference's stops its
-    ``detours`` (see :func:`_track_changes`; empty for a shape edit)."""
+    """Routes run as main pattern per direction over the period, with their stop names, the periods
+    they ran and what changes against the direction's reference (see :func:`_group_versions`)."""
     from microsegments.report import title_name
     dates = [d for d in date_range(first, last) if d in set(data.ingested_dates())]
     if not dates:
@@ -553,24 +597,11 @@ def versions(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]
     v = net.versions()
     pats = net.patterns.select("pattern_uid", "stop_names")
     v = v.join(pats, on="pattern_uid", how="left")
-    out = []
+    runs = []
     for r in v.iter_rows(named=True):
-        names = r.pop("stop_names") or []
-        r["first"], r["last"] = r["first"].isoformat(), r["last"].isoformat()
-        r["from"], r["to"], r["n_stops"] = (names[0] if names else None), (names[-1] if names else None), len(names)
-        r["stops"] = [title_name(n) for n in names]
-        r["_len"] = net.links_of(r["pattern_uid"])["len_m"].to_list()
-        out.append(r)
-    for dr in {r["direction_id"] for r in out}:
-        vs = [r for r in out if r["direction_id"] == dr]
-        ref = max(vs, key=lambda r: (r["n_stops"], r["last"], r["first"]))
-        for r in vs:
-            r["ref"] = r is ref
-            have = set(r["stops"])
-            r["removed"] = [] if r["ref"] else [n for n in ref["stops"] if n not in have]
-            r["added"] = [] if r["ref"] else [n for n in r["stops"] if n not in set(ref["stops"])]
-            same = not r["ref"] and r["stops"] == ref["stops"] and len(r["_len"]) == len(ref["_len"]) == len(r["stops"]) - 1
-            r["detours"] = _track_changes(ref["_len"], r["_len"], r["stops"]) if same else []
-    for r in out:
-        del r["_len"]
-    return out
+        names = r["stop_names"] or []
+        runs.append({"direction_id": r["direction_id"], "pattern_uid": r["pattern_uid"],
+                     "first": r["first"].isoformat(), "last": r["last"].isoformat(), "n_days": r["n_days"],
+                     "from": names[0] if names else None, "to": names[-1] if names else None, "n_stops": len(names),
+                     "stops": [title_name(n) for n in names], "_len": net.links_of(r["pattern_uid"])["len_m"].to_list()})
+    return _group_versions(runs)

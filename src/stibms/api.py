@@ -7,8 +7,9 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
     GET /api/health
     GET /api/lines?date=                      lines of the GTFS in force on date (default: latest)
     GET /api/coverage?line&from&to            per day feed coverage, line observations, holiday, status
-    GET /api/versions?line&from&to            GTFS versions (main pattern runs) per direction, with their
-                                              stops and the stops removed / added against the reference
+    GET /api/versions?line&from&to            routes run as main pattern per direction (one per stop
+                                              sequence), with their stops, ``periods`` (runs of days,
+                                              n_days) and the stops removed / added against the reference
                                               (most stops, latest on a tie: ``ref``); with the
                                               reference's stops, ``detours`` (detours, moved stops)
     GET /api/analysis[.csv|.parquet]?line&from&to&dow&holidays=exclude&seg=30&phase=0&grid=stops

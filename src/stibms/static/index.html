@@ -726,13 +726,20 @@ $("notes").addEventListener("click", e => {
 });
 
 // ---------------------------------------------------------------- route changes in the period
-// /api/versions: per direction, the main route versions; the reference is the one with the most stops.
-// A change period lists, per direction, the stops it drops or adds, or, with the reference's stops, its
-// detours and moved stops (``detours``: a link longer or shorter by hundreds of metres); its button adds its days to
-// the excluded periods.
+// /api/versions: per direction, the routes run as main pattern (one per stop sequence, with the periods it
+// ran); the reference is the one with the most stops. A change lists its periods and, per direction, the
+// stops it drops or adds, or, with the reference's stops, its detours and moved stops (``detours``: a link
+// longer or shorter by hundreds of metres); its button adds its periods to the excluded periods.
 let ROUTES = null, RGROUPS = [];
+// "6 juin 2026", "du 6 au 28 juin 2026 (15 jours)", "du 30 mai au 2 juin 2026 (4 jours)"
+function fper(p) {
+  if (p.first === p.last) return fday(p.first, true);
+  const [a, b] = [p.first, p.last], dn = s => { const d = +s.slice(8, 10); return d === 1 ? "1er" : String(d); };
+  const from = a.slice(0, 7) === b.slice(0, 7) ? dn(a) : fday(a, a.slice(0, 4) !== b.slice(0, 4));
+  return `du ${from} au ${fday(b, true)} (${p.n_days} jour${p.n_days > 1 ? "s" : ""})`;
+}
 function changeTxt(x) {
-  const list = a => a.slice(0, 3).map(esc).join(", ") + (a.length > 3 ? "…" : "");
+  const list = a => a.length > 3 ? `${a.slice(0, 3).map(esc).join(", ")} et ${a.length - 3} autre${a.length > 4 ? "s" : ""}` : andList(a.map(esc));
   const n = (k, w) => `${k} arrêt${k > 1 ? "s" : ""} ${w}`;
   const out = [];
   if (x.removed.length) out.push(`${n(x.removed.length, "en moins")} : ${list(x.removed)}`);
@@ -752,20 +759,23 @@ function drawRoutes() {
   const ndir = new Set(v.map(x => x.direction_id)).size;
   const refs = v.filter(x => x.ref);
   const refTo = d => { const r = refs.find(x => x.direction_id === d); return r ? r.stops[r.stops.length - 1] : ""; };
+  // directions changed on the same days share a line
   const g = new Map();
-  for (const x of changed) { const k = x.first + ".." + x.last; if (!g.has(k)) g.set(k, []); g.get(k).push(x); }
-  RGROUPS = [...g.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([k, xs]) => ({a: k.split("..")[0], b: k.split("..")[1], xs}));
+  for (const x of changed) { const k = x.periods.map(p => p.first + ".." + p.last).join(","); if (!g.has(k)) g.set(k, []); g.get(k).push(x); }
+  RGROUPS = [...g.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([, xs]) => ({periods: xs[0].periods, xs}));
   $("routes").innerHTML = `<div class="routes"><b>Changements de tracé sur la période</b><ul>${RGROUPS.map((gr, i) => {
-    const ex = XL.covers(gr.a, gr.b);
+    const ex = gr.periods.every(p => XL.covers(p.first, p.last));
     const what = gr.xs.map(x => (ndir > 1 ? `vers ${esc(refTo(x.direction_id))} : ` : "") + changeTxt(x)).join(" · ");
-    return `<li><span><b>${fspan(gr.a, gr.b)}</b> · ${what}</span><span class="acts"><button type="button" class="mini" data-excl="${i}"${ex ? " disabled" : ""}>${ex ? "Période exclue" : "Exclure cette période"}</button></span></li>`;
+    const when = andList(gr.periods.map(fper)), np = gr.periods.length;
+    return `<li><span><b>${when.charAt(0).toUpperCase() + when.slice(1)}</b> · ${what}</span><span class="acts"><button type="button" class="mini" data-excl="${i}"${ex ? " disabled" : ""}>${ex ? (np > 1 ? "Périodes exclues" : "Période exclue") : (np > 1 ? "Exclure ces périodes" : "Exclure cette période")}</button></span></li>`;
   }).join("")}</ul></div>`;
 }
 $("routes").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
   if (b.dataset.excl != null) {
     const gr = RGROUPS[+b.dataset.excl];
-    XL.add(gr.a, gr.b); $("fmore").open = true; runLine();
+    for (const p of gr.periods) XL.add(p.first, p.last);
+    $("fmore").open = true; runLine();
   }
 });
 

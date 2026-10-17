@@ -401,3 +401,22 @@ def test_schedule_cache_control(client):
     assert "max-age=3600" in client.get(f"/api/analysis?{Q}&dow=0-6&reduced=include").headers["cache-control"]
     assert "max-age=300" in client.get(f"/api/analysis?{Q}&dow=0-6&reduced=include&school=exclude").headers["cache-control"]
     assert "max-age=300" in client.get(f"/api/analysis?{Q}&dow=0-6").headers["cache-control"]   # strikes excluded by default
+
+
+def test_versions_grouped_by_stops():
+    from stibms.analysis import _group_versions
+    full, short = ["A", "B", "C", "D"], ["B", "C", "D"]
+
+    def run(a, b, n, stops, uid, lens=None):
+        return {"direction_id": 0, "pattern_uid": uid, "first": a, "last": b, "n_days": n, "from": stops[0],
+                "to": stops[-1], "n_stops": len(stops), "stops": stops, "_len": lens or [100.0] * (len(stops) - 1)}
+    # the short route under two pattern_uids (feed change), next to each other, then back after the full one
+    g = _group_versions([run("2026-06-01", "2026-06-05", 5, full, "f1"), run("2026-06-06", "2026-06-10", 4, short, "s1"),
+                         run("2026-06-11", "2026-06-12", 2, short, "s2"), run("2026-06-13", "2026-06-20", 8, full, "f2"),
+                         run("2026-06-21", "2026-06-21", 1, short, "s1"), run("2026-06-22", "2026-06-30", 9, full, "f1", [100.0, 101.0, 99.0])])
+    assert len(g) == 2
+    ref, sh = (next(x for x in g if x["ref"] is r) for r in (True, False))
+    assert ref["stops"] == full and ref["n_days"] == 22 and len(ref["periods"]) == 3      # a shape edit stays the reference
+    assert sh["removed"] == ["A"] and sh["pattern_uid"] == "s1" and sh["n_days"] == 7
+    assert sh["periods"] == [{"first": "2026-06-06", "last": "2026-06-12", "n_days": 6},
+                             {"first": "2026-06-21", "last": "2026-06-21", "n_days": 1}]
