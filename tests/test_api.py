@@ -420,3 +420,21 @@ def test_versions_grouped_by_stops():
     assert sh["removed"] == ["A"] and sh["pattern_uid"] == "s1" and sh["n_days"] == 7
     assert sh["periods"] == [{"first": "2026-06-06", "last": "2026-06-12", "n_days": 6},
                              {"first": "2026-06-21", "last": "2026-06-21", "n_days": 1}]
+
+
+def test_lasting_change_before_period():
+    from stibms.analysis import _lasting_change
+    full, cut, works = ["A", "B", "C", "D"], ["B", "C", "D"], ["C", "D"]
+
+    def run(a, b, n, stops):
+        return {"direction_id": 0, "first": a, "last": b, "n_days": n, "from": stops[0], "to": stops[-1],
+                "n_stops": len(stops), "stops": stops}
+    ref = {"stops": cut, "first": "2025-09-01"}
+    # cut back on 05-21 after a 4-day works route, a one-day interruption since: the cut dates from 05-21
+    back = [run("2025-01-01", "2025-05-16", 136, full), run("2025-05-17", "2025-05-20", 4, works),
+            run("2025-05-21", "2025-06-06", 17, cut), run("2025-06-07", "2025-06-07", 1, works),
+            run("2025-06-08", "2025-08-31", 85, cut)]
+    c = _lasting_change(back, ref)
+    assert c["since"] == "2025-05-21" and c["removed"] == ["A"] and not c["added"] and c["before"]["last"] == "2025-05-16"
+    assert _lasting_change(back[2:], ref) is None                 # the same route all the lookback
+    assert _lasting_change([], ref) is None

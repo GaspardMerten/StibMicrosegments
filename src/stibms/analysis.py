@@ -584,19 +584,43 @@ def _group_versions(runs: list[dict]) -> list[dict]:
     return out
 
 
-def versions(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]:
-    """Routes run as main pattern per direction over the period, with their stop names, the periods
-    they ran and what changes against the direction's reference (see :func:`_group_versions`)."""
+# A route that already ran when the period starts may itself be a lasting change made before it (55,
+# 2025-05-21: Da Vinci -> Rogier cut back to Tilleul -> Rogier); inside the period it is the reference
+# and shows nothing. The main-pattern runs of the year before tell when it started and what ran before.
+LOOKBACK_DAYS = 365
+LASTING_MIN_DAYS = 7      # another route for fewer days (works, one-day diversions) does not end it
+
+
+def _lasting_change(back: list[dict], ref: dict) -> dict | None:
+    """The change that made ``ref`` (a :func:`_group_versions` reference, running when the period
+    starts) the route, from ``back`` (main-pattern runs before the period, ``_runs`` format, one
+    direction): walking back over the runs of its stops and over shorter interruptions, the first
+    run of another route of at least ``LASTING_MIN_DAYS`` days is the route before. None when there
+    is none in ``back`` or it serves the same stops. Else: since (first day of ``ref``'s stops after
+    it), and the route before (from, to, n_stops, stops, last) with ``removed`` / ``added`` stop names."""
+    since, before = None, None
+    for r in sorted(back, key=lambda r: r["first"], reverse=True):
+        if r["stops"] == ref["stops"]:
+            since = r["first"]
+        elif r["n_days"] >= LASTING_MIN_DAYS:
+            before = r
+            break
+    if before is None:
+        return None
+    have, prev = set(ref["stops"]), set(before["stops"])
+    removed = [n for n in before["stops"] if n not in have]
+    added = [n for n in ref["stops"] if n not in prev]
+    if not removed and not added:
+        return None
+    return {"since": since or ref["first"],
+            "before": {"from": before["from"], "to": before["to"], "n_stops": before["n_stops"],
+                       "stops": before["stops"], "last": before["last"]},
+            "removed": removed, "added": added}
+
+
+def _runs(net) -> list[dict]:
     from microsegments.report import title_name
-    dates = [d for d in date_range(first, last) if d in set(data.ingested_dates())]
-    if not dates:
-        return []
-    net = data.network(line, dates)
-    if not net.pattern_days.height:
-        return []
-    v = net.versions()
-    pats = net.patterns.select("pattern_uid", "stop_names")
-    v = v.join(pats, on="pattern_uid", how="left")
+    v = net.versions().join(net.patterns.select("pattern_uid", "stop_names"), on="pattern_uid", how="left")
     runs = []
     for r in v.iter_rows(named=True):
         names = r["stop_names"] or []
@@ -604,4 +628,33 @@ def versions(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]
                      "first": r["first"].isoformat(), "last": r["last"].isoformat(), "n_days": r["n_days"],
                      "from": names[0] if names else None, "to": names[-1] if names else None, "n_stops": len(names),
                      "stops": [title_name(n) for n in names], "_len": net.links_of(r["pattern_uid"])["len_m"].to_list()})
-    return _group_versions(runs)
+    return runs
+
+
+def versions(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]:
+    """Routes run as main pattern per direction over the period, with their stop names, the periods
+    they ran and what changes against the direction's reference (see :func:`_group_versions`). A
+    reference already running on the period's first day carries ``lasting`` when it replaced another
+    route in the ``LOOKBACK_DAYS`` before (see :func:`_lasting_change`), else ``lasting`` is None."""
+    ingested = set(data.ingested_dates())
+    dates = [d for d in date_range(first, last) if d in ingested]
+    if not dates:
+        return []
+    net = data.network(line, dates)
+    if not net.pattern_days.height:
+        return []
+    runs = _runs(net)
+    out = _group_versions(runs)
+    back_dates = [d for d in date_range(first - dt.timedelta(days=LOOKBACK_DAYS), first - dt.timedelta(days=1))
+                  if d in ingested]
+    back: list[dict] = []
+    if back_dates:
+        bnet = data.network(line, back_dates)
+        if bnet.pattern_days.height:
+            back = _runs(bnet)
+    for g in out:
+        g["lasting"] = None
+        start = min(r["first"] for r in runs if r["direction_id"] == g["direction_id"])
+        if g["ref"] and g["first"] == start:
+            g["lasting"] = _lasting_change([r for r in back if r["direction_id"] == g["direction_id"]], g)
+    return out

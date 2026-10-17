@@ -11,7 +11,9 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
                                               sequence), with their stops, ``periods`` (runs of days,
                                               n_days) and the stops removed / added against the reference
                                               (most stops, latest on a tie: ``ref``); with the
-                                              reference's stops, ``detours`` (detours, moved stops)
+                                              reference's stops, ``detours`` (detours, moved stops);
+                                              on a reference running from the start, ``lasting``: the
+                                              change made before the period that made it the route
     GET /api/analysis[.csv|.parquet]?line&from&to&dow&holidays=exclude&seg=30&phase=0&grid=stops
                                        &stopzone=36,38&ref=20-24&school=include&reduced=exclude
                                        &exclude=D1..D2,D3
