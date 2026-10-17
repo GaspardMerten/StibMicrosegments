@@ -66,6 +66,9 @@ class RankQuery:
     mode: str = "all"
     terminus: bool = False               # include termini and regulation points
     stops: bool = False                  # include the stop zones
+    school: str = "include"              # days left out on purpose, as the line page (stibms.schedule)
+    reduced: str = "include"
+    exclude: tuple = ()
 
     def __post_init__(self):
         if self.first > self.last:
@@ -78,9 +81,12 @@ class RankQuery:
             raise ValueError("dow must be a subset of 0..6 (0 = Monday)")
         if self.holidays not in ("exclude", "include"):
             raise ValueError("holidays must be exclude or include")
+        from .analysis import _check_days
+        _check_days(self)
 
     def canonical(self) -> dict:
-        d = asdict(self)
+        from .analysis import _days_canonical
+        d = _days_canonical(self, asdict(self), self.first, self.last)
         d["first"], d["last"], d["dow"] = self.first.isoformat(), self.last.isoformat(), sorted(set(self.dow))
         return d
 
@@ -229,7 +235,7 @@ def merge_groups(g: pl.DataFrame, geo: dict[str, list]) -> dict[str, str]:
 def per_line_links(data: Data, rq: RankQuery, info: dict) -> tuple[pl.DataFrame, int, int]:
     """Per (line, link_key): vehicle time lost per day (selected zones, running and stop parts),
     passages per day, reason. Returns (frame, lines with data, lines used after the mode filter)."""
-    from . import holidays as hol
+    from . import schedule
     frames, days, links = [], [], []
     months = months_between(rq.first, rq.last)
     if len(months) > 1:
@@ -247,10 +253,10 @@ def per_line_links(data: Data, rq: RankQuery, info: dict) -> tuple[pl.DataFrame,
             links.append(lk)
     if not frames:
         return pl.DataFrame(), 0, 0
-    hd = hol.between(rq.first, rq.last) if rq.holidays == "exclude" else {}
+    hd = schedule.exclusions(data, rq.first, rq.last, rq.holidays, rq.school, rq.reduced, rq.exclude)
     keep_date = (pl.col("service_date").is_between(rq.first, rq.last)
                  & pl.col("service_date").dt.weekday().sub(1).is_in(sorted(set(rq.dow)))
-                 & ~pl.col("service_date").is_in(list(hd)))
+                 & ~pl.col("service_date").is_in(sorted(hd)))
     cube = pl.concat(frames, how="diagonal_relaxed").filter(keep_date)
     dd = pl.concat(days, how="diagonal_relaxed").filter(keep_date).unique()
     n_lines = dd["line"].n_unique() if dd.height else 0
@@ -373,6 +379,18 @@ def compute(data: Data, rq: RankQuery, top: int = 50) -> dict:
     info = line_modes(data)
     s, n_lines, n_used = per_line_links(data, rq, info)
     res = assemble(data, rq, s, top, info, n_lines, n_used)
+    from . import schedule
+    dow = set(rq.dow)
+    present: set[dt.date] = set()        # days with data (any line)
+    for m in months_between(rq.first, rq.last):
+        dd = month_tables(data, m)[1]
+        if dd is not None and dd.height:
+            present |= set(dd["service_date"].unique().to_list())
+    left: dict[str, int] = {}
+    for d, (why, _) in schedule.exclusions(data, rq.first, rq.last, rq.holidays, rq.school, rq.reduced, rq.exclude).items():
+        if d.weekday() in dow and d in present:
+            left[why] = left.get(why, 0) + 1
+    res["days_excluded"] = left          # selected days with data left out on purpose, per reason
     res["status"] = "done"
     res["stamp"] = data.stamp(date_range(rq.first, rq.last))
     res["computed_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")

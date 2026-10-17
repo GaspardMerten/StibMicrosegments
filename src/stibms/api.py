@@ -7,20 +7,28 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
     GET /api/health
     GET /api/lines?date=                      lines of the GTFS in force on date (default: latest)
     GET /api/coverage?line&from&to            per day feed coverage, line observations, holiday, status
-    GET /api/versions?line&from&to            GTFS versions (main pattern runs) per direction
+    GET /api/versions?line&from&to            GTFS versions (main pattern runs) per direction, with their
+                                              stops and the stops removed / added against the reference
+                                              (most stops, latest on a tie: ``ref``)
     GET /api/analysis[.csv|.parquet]?line&from&to&dow&holidays=exclude&seg=30&phase=0&grid=stops
-                                       &stopzone=36,38&ref=20-23
+                                       &stopzone=36,38&ref=20-23&school=include&reduced=include
+                                       &exclude=D1..D2,D3
                                               JSON contract (microsegments.contract) / result table
     GET /api/hotspots[.csv|.parquet]?...      hotspot stretches (same parameters)
     GET /api/tune?...&lengths=15,20,30,40,50  segment-length criteria (slow, cached)
     GET /api/compare?line&a=D1..D2&b=D3..D4&dow&holidays&seg&...
                                               period B's contract + the ``compare`` section
-    GET /api/ranking?from&to&dow&holidays&mode=all|tram|bus|metro&top=50&stops=false&terminus=false
+    GET /api/ranking?from&to&dow&holidays&school&reduced&exclude&mode=all|tram|bus|metro&top=50&stops=false&terminus=false
                                               costliest stretches of the network (vehicle-hours lost
                                               per day, between stops unless stops=true; termini and
                                               timing stops (vehicles waiting for the schedule) left out unless terminus=true);
                                               default window when from/to are omitted. Sums the
                                               monthly link cubes: < 1 s for any window.
+    Days left out on purpose, on every endpoint taking a period (analysis, hotspots, tune, compare,
+    ranking): holidays (public holidays, default exclude), school (STIB school-holiday timetable,
+    default include), reduced (reduced service, strikes, default include), exclude (user periods,
+    applied to both periods of a comparison). See stibms.schedule; period.excluded gives their
+    reasons holiday, school_holiday, reduced_service, user_period.
     GET /api/status                           ingested range, derived months, months pending
     GET /, /comparer, /classement             the page (one line / two periods / network ranking); /methode -> /
     GET /view?<analysis or compare params>    the package page fed by /api/analysis or /api/compare
@@ -209,6 +217,26 @@ def _pair(s: str, name: str, cast=float, sep=None) -> tuple:
     raise HTTPException(422, f"{name}: expected two numbers, e.g. 30,60")
 
 
+def _periods(s: str | None, name: str = "exclude") -> tuple:
+    """``2025-12-20..2026-01-04,2026-02-16`` -> ((first, last), ...); a single date is a one-day period."""
+    out = []
+    for part in (s or "").replace(" ", "").split(","):
+        if not part:
+            continue
+        a, dots, b = part.partition("..")
+        if dots and not (a and b):
+            raise HTTPException(422, f"{name} : période incomplète (AAAA-MM-JJ..AAAA-MM-JJ).")
+        x, y = _date(a, name), _date(b or a, name)
+        if x is None or y is None:
+            raise HTTPException(422, f"{name} : période invalide (AAAA-MM-JJ..AAAA-MM-JJ).")
+        if x > y:
+            raise HTTPException(422, f"{name} : la date de début doit précéder la date de fin.")
+        out.append((x, y))
+    if len(out) > 50:
+        raise HTTPException(422, f"{name} : 50 périodes au plus.")
+    return tuple(out)
+
+
 def period(line: str = Q(..., description="line number (GTFS route_short_name)"),
            from_: str = Q(..., alias="from"), to: str = Q(...)):
     a, b = _date(from_, "from"), _date(to, "to")
@@ -221,14 +249,18 @@ def period(line: str = Q(..., description="line number (GTFS route_short_name)")
 
 def query(line: str = Q(...), from_: str = Q(..., alias="from"), to: str = Q(...),
           dow: str = Q("0-4"), holidays: str = Q("exclude"), seg: float = Q(30.0),
-          phase: float = Q(0.0), grid: str = Q("stops"), stopzone: str = Q("36,38"), ref: str = Q("20-23")):
+          phase: float = Q(0.0), grid: str = Q("stops"), stopzone: str = Q("36,38"), ref: str = Q("20-23"),
+          school: str = Q("include", description="STIB school-holiday timetable days: exclude | include"),
+          reduced: str = Q("include", description="reduced-service days (strikes): exclude | include"),
+          exclude: str = Q("", description="periods left out, D1..D2,D3..D4 (a single date is one day)")):
     from .analysis import Query
     ln, a, b = period(line, from_, to)
     try:
         return Query(line=ln, first=a, last=b, dow=tuple(sorted(set(_ints(dow, "dow")))), holidays=holidays,
                      seg=float(seg), phase=float(phase), grid=grid,
                      stopzone=tuple(float(x) for x in _pair(stopzone, "stopzone", sep=",")),
-                     ref=tuple(int(x) for x in _pair(ref, "ref", int)))
+                     ref=tuple(int(x) for x in _pair(ref, "ref", int)),
+                     school=school, reduced=reduced, exclude=_periods(exclude))
     except ValueError as e:
         raise HTTPException(422, str(e))
 
@@ -241,9 +273,16 @@ def _stamp(data, a: dt.date, b: dt.date, a2: dt.date | None = None, b2: dt.date 
     return data._cached(f"stamp:{a}:{b}:{a2}:{b2}", lambda: data.stamp(dates), ttl=120)
 
 
-def _cache_control(data, b: dt.date) -> str:
+def _cache_control(data, b: dt.date, q=None) -> str:
+    """Long for a past, ingested period. Short too when ``q`` excludes GTFS service categories whose
+    reference (``schedule.REF_DAYS`` after ``b``) reaches past the newest feed: later feeds may move them."""
     from .servicedays import yesterday
     ing = data.ingested_dates()
+    if q is not None and _uses_schedule(q):
+        from . import schedule
+        nf = schedule.newest_feed_date(data)
+        if nf is None or b + dt.timedelta(days=schedule.REF_DAYS) > nf:
+            return SHORT_CACHE
     return LONG_CACHE if ing and b < yesterday() and b <= ing[-1] else SHORT_CACHE
 
 
@@ -271,7 +310,7 @@ def _cached_json(kind: str, q, compute, request: Request) -> Response:
     """kind: result family; compute() -> JSON-able. In-process LRU, then bucket, then compute."""
     data = state.data
     key = f"{kind}-r{RESULT_REV}-{q.key(_stamp_of(data, q))}"
-    cc = _cache_control(data, q.last)
+    cc = _cache_control(data, q.last, q)
     gz = state.blobs.get(key)
     src = "memory"
     if gz is None:
@@ -302,14 +341,30 @@ def _cached_json(kind: str, q, compute, request: Request) -> Response:
 
 def _stamp_of(data, q) -> str:
     if hasattr(q, "a") and hasattr(q, "b"):
-        return _stamp(data, q.a[0], q.a[1], q.b[0], q.b[1])
-    return _stamp(data, q.first, q.last)
+        st = _stamp(data, q.a[0], q.a[1], q.b[0], q.b[1])
+    else:
+        st = _stamp(data, q.first, q.last)
+    return st + _schedule_stamp(data, q)
+
+
+def _schedule_stamp(data, q) -> str:
+    """The GTFS service categories move with new feeds (their reference spans the weeks around a
+    date): a query that excludes them is keyed on the categorised days too."""
+    if not _uses_schedule(q):
+        return ""
+    from . import schedule
+    ranges = [q.a, q.b] if hasattr(q, "a") and hasattr(q, "b") else [(q.first, q.last)]
+    return ":" + schedule.stamp(data, *ranges)
+
+
+def _uses_schedule(q) -> bool:
+    return "exclude" in (getattr(q, "school", "include"), getattr(q, "reduced", "include"))
 
 
 def _run(q):
     from . import analysis as A
     data = state.data
-    key = q.key(_stamp(data, q.first, q.last))
+    key = q.key(_stamp_of(data, q))
     r = state.runs.get(key)
     if r is None:
         with state.lock("run-" + key):
@@ -441,7 +496,7 @@ def analysis_table(fmt: str, q=Depends(query)):
     if fmt not in ("csv", "parquet"):
         raise HTTPException(404)
     r = _run(q)
-    return _table_response(A.result_table(r), fmt, _fname(q, "segments"), _cache_control(state.data, q.last))
+    return _table_response(A.result_table(r), fmt, _fname(q, "segments"), _cache_control(state.data, q.last, q))
 
 
 @app.get("/api/hotspots")
@@ -459,7 +514,7 @@ def hotspots_table(fmt: str, q=Depends(query)):
     if fmt not in ("csv", "parquet"):
         raise HTTPException(404)
     r = _run(q)
-    return _table_response(r.hotspots(), fmt, _fname(q, "hotspots"), _cache_control(state.data, q.last))
+    return _table_response(r.hotspots(), fmt, _fname(q, "hotspots"), _cache_control(state.data, q.last, q))
 
 
 @app.get("/api/tune")
@@ -470,7 +525,7 @@ def tune(request: Request, q=Depends(query), lengths: str = Q("15,20,30,40,50,75
     B = max(10, min(int(B), 200))
 
     class _K:  # cache key carries the tune parameters too
-        first, last = q.first, q.last
+        first, last, school, reduced = q.first, q.last, q.school, q.reduced
 
         @staticmethod
         def key(stamp):
@@ -511,14 +566,16 @@ def _range(s: str, name: str) -> tuple[dt.date, dt.date]:
 def compare_query(line: str = Q(...), a: str = Q(..., description="period A (before), YYYY-MM-DD..YYYY-MM-DD"),
                   b: str = Q(..., description="period B (after)"), dow: str = Q("0-4"), holidays: str = Q("exclude"),
                   seg: float = Q(30.0), phase: float = Q(0.0), grid: str = Q("stops"), stopzone: str = Q("36,38"),
-                  ref: str = Q("20-23")):
+                  ref: str = Q("20-23"), school: str = Q("include"), reduced: str = Q("include"),
+                  exclude: str = Q("", description="periods left out of both A and B, D1..D2,D3..D4")):
     from .analysis import CompareQuery
     try:
         return CompareQuery(line=line.strip(), a=_range(a, "a"), b=_range(b, "b"),
                             dow=tuple(sorted(set(_ints(dow, "dow")))), holidays=holidays, seg=float(seg),
                             phase=float(phase), grid=grid,
                             stopzone=tuple(float(x) for x in _pair(stopzone, "stopzone", sep=",")),
-                            ref=tuple(int(x) for x in _pair(ref, "ref", int)))
+                            ref=tuple(int(x) for x in _pair(ref, "ref", int)),
+                            school=school, reduced=reduced, exclude=_periods(exclude))
     except ValueError as e:
         raise HTTPException(422, str(e))
 
@@ -572,7 +629,8 @@ def _algo() -> int:
 @app.get("/api/ranking")
 def ranking(request: Request, from_: str | None = Q(None, alias="from"), to: str | None = None,
             dow: str = Q("0-4"), holidays: str = Q("exclude"), mode: str = Q("all"), top: int = Q(50),
-            terminus: bool = Q(False), stops: bool = Q(False)):
+            terminus: bool = Q(False), stops: bool = Q(False), school: str = Q("include"),
+            reduced: str = Q("include"), exclude: str = Q("")):
     from . import ranking as R
     data = state.data
     top = max(5, min(int(top), 200))
@@ -583,10 +641,11 @@ def ranking(request: Request, from_: str | None = Q(None, alias="from"), to: str
             raise HTTPException(404, "aucun mois complet calculé pour l'instant : données en cours de préparation")
         a, b = a or w[0], b or w[1]
     try:
-        rq = R.RankQuery(a, b, tuple(sorted(set(_ints(dow, "dow")))), holidays, mode, terminus, stops)
+        rq = R.RankQuery(a, b, tuple(sorted(set(_ints(dow, "dow")))), holidays, mode, terminus, stops,
+                         school=school, reduced=reduced, exclude=_periods(exclude))
     except ValueError as e:
         raise HTTPException(422, str(e))
-    key = "ranking-" + rq.key(_stamp(data, a, b), top)
+    key = "ranking-" + rq.key(_stamp(data, a, b) + _schedule_stamp(data, rq), top)
     gz = state.blobs.get(key)
     if gz is None:
         with state.lock(key):
@@ -596,7 +655,7 @@ def ranking(request: Request, from_: str | None = Q(None, alias="from"), to: str
                 gz = gzip.compress(json.dumps(res, separators=(",", ":"), default=str).encode(), 6)
                 if res.get("stretches"):       # an empty window may just not have its cubes yet
                     state.blobs.put(key, gz)
-    return _gz_response(request, gz, _cache_control(data, b))
+    return _gz_response(request, gz, _cache_control(data, b, rq))
 
 
 @app.get("/", include_in_schema=False)
@@ -635,6 +694,17 @@ _LOADER = """<script>
     var s = document.createElement("script");
     s.textContent = main.textContent;
     document.body.appendChild(s);
+    // the platform page shows the numbers of the analysis in its data-quality block (the page's own tiles are hidden)
+    try {
+      var segs = 0, obs = 0, pr = d.period || {}, c = d.compare;
+      (d.dirs || []).forEach(function (x) {
+        segs += ((x.seg || {}).key || []).length;
+        ((x.wk || {}).obs || []).forEach(function (w) { w.forEach(function (row) { row.forEach(function (v) { obs += v; }); }); });
+      });
+      var per = function (p) { return {first: p.first, last: p.last, days: p.days, excluded: p.excluded || []}; };
+      parent.postMessage({ms: "summary", seg_m: (d.params || {}).segment_m, segs: segs, obs: obs, period: per(pr),
+                          compare: c ? {a: per(c.a), b: per(c.b)} : null}, "*");
+    } catch (x) {}
     try { parent.postMessage({ms: "ready"}, "*"); } catch (x) {}
     // the platform page sizes this frame to its content (no scroll inside a scroll)
     var last = 0;
@@ -664,7 +734,7 @@ def _template() -> str | None:
     try:
         from microsegments.html.export import render
         html = render({"tiles": True}, title="STIB · microsegments", lang="fr",
-                      description="Temps passé par les véhicules STIB sur chaque tronçon de 30 m.")
+                      description="Vitesse moyenne des véhicules STIB sur chaque tronçon de 30 m.")
     except Exception:  # noqa: BLE001 - template not shipped / incompatible: the page falls back
         log.exception("page template unavailable")
         return None

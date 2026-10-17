@@ -52,6 +52,13 @@ def ingest_day(mt: MobilityTwin, store: Store, d: date) -> dict:
                 store.write_bytes(f"gtfs/feeds/{sha}/{i.filename.rsplit('/', 1)[-1]}", zf.read(i))
                 tables.append(i.filename)
         store.write_json(f"gtfs/feeds/{sha}/_SUCCESS", {"sha": sha, "first_snapshot": s.date, "tables": tables})
+    # trips per date of the feed (stibms.schedule: holiday timetable, reduced service), once per feed
+    if not store.exists(f"gtfs/daytrips/sha={sha}.parquet"):
+        try:
+            from .schedule import write_feed_trips
+            write_feed_trips(store, sha)
+        except Exception:  # noqa: BLE001 - a cache: the API computes it on first use otherwise
+            pass
     snap_local = datetime.fromtimestamp(s.timestamp, timezone.utc).astimezone(TZ).date()
     entry = {"service_date": d.isoformat(), "sha": sha, "snapshot": s.date,
              "snapshot_date": snap_local.isoformat(), "age_days": (d - snap_local).days}

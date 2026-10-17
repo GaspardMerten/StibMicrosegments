@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 import polars as pl
 
 from . import holidays as hol
-from . import ms, stopzones
+from . import ms, schedule, stopzones
 from .data import ALGO_VERSION, Data, date_range
 
 SOURCE = "STIB vehicle-distance et punctuality via MobilityTwin.Brussels"
@@ -38,6 +38,9 @@ class Query:
     ref: tuple[int, int] = (20, 23)
     hours: tuple[int, int] = (5, 24)
     B: int = 200                         # hotspot bootstrap draws
+    school: str = "include"              # STIB school-holiday timetable days (stibms.schedule)
+    reduced: str = "include"             # reduced-service days (strikes)
+    exclude: tuple = ()                  # user periods ((first, last), ...), see schedule.norm_periods
 
     def __post_init__(self):
         if self.first > self.last:
@@ -50,13 +53,14 @@ class Query:
             raise ValueError("grid must be stops, equal or fixed")
         if self.holidays not in ("exclude", "include"):
             raise ValueError("holidays must be exclude or include")
+        _check_days(self)
         if not self.dow or any(d not in range(7) for d in self.dow):
             raise ValueError("dow must be a subset of 0..6 (0 = Monday)")
         if not (0 <= self.ref[0] < self.ref[1] <= 28):
             raise ValueError("ref must be a:b hours with a < b")
 
     def canonical(self) -> dict:
-        d = asdict(self)
+        d = _days_canonical(self, asdict(self), self.first, self.last)
         d["first"], d["last"] = self.first.isoformat(), self.last.isoformat()
         d["dow"] = sorted(set(self.dow))
         return d
@@ -66,11 +70,40 @@ class Query:
         return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
+def _check_days(q) -> None:
+    for k in ("school", "reduced"):
+        if getattr(q, k) not in schedule.CHOICES:
+            raise ValueError(f"{k} must be exclude or include")
+    for a, b in q.exclude:
+        if a > b:
+            raise ValueError("exclude: each period must start before it ends")
+    if len(q.exclude) > 50:
+        raise ValueError("exclude: 50 periods at most")
+
+
+def _days_canonical(q, d: dict, first: dt.date, last: dt.date) -> dict:
+    """The day-exclusion fields only when set (keys of queries without them are unchanged), user
+    periods clipped to the queried days and merged."""
+    for k in ("school", "reduced"):
+        if d[k] == "include":
+            del d[k]
+    ex = schedule.norm_periods(q.exclude, first, last)
+    if ex:
+        d["exclude"] = [[a.isoformat(), b.isoformat()] for a, b in ex]
+    else:
+        del d["exclude"]
+    return d
+
+
+def day_exclusions(data: Data, q, first: dt.date, last: dt.date) -> dict:
+    return schedule.exclusions(data, first, last, q.holidays, q.school, q.reduced, q.exclude)
+
+
 @dataclass
 class Run:
     query: Query
     dates: list[dt.date]
-    holidays: dict[dt.date, str]
+    holidays: dict[dt.date, tuple[str, str | None]]   # days left out on purpose: date -> (reason, label)
     net: object
     segments: pl.DataFrame
     analysis: object
@@ -205,13 +238,14 @@ def _params(q):
                   tick_from_coverage=True)
 
 
-def _analyse(cube, ld: Loaded, segs, q, first: dt.date, last: dt.date, dates: list[dt.date]):
+def _analyse(cube, ld: Loaded, segs, q, first: dt.date, last: dt.date, dates: list[dt.date], data: Data | None = None):
+    """Analysis of [first, last]; returns it with the days left out on purpose (date -> (reason, label))."""
     from microsegments.config import Quality, Select
     from microsegments.metrics import analyse
-    hd = hol.between(first, last) if q.holidays == "exclude" else {}
+    hd = day_exclusions(data, q, first, last)
     present = set(dates)
     select = Select(route=q.line, dates=f"{first}..{last}", weekdays=sorted(set(q.dow)),
-                    exclude_dates=[d.isoformat() for d in hd if d.weekday() in q.dow and d in present],
+                    exclude_dates=[d.isoformat() for d in sorted(hd) if d.weekday() in q.dow and d in present],
                     hours=q.hours)
     cov = ld.coverage
     return analyse(cube, cov if cov.height else None, ld.passages, segs, ld.net.pattern_days, select,
@@ -231,19 +265,28 @@ def run(data: Data, q: Query, with_mode: bool = True) -> Run:
     cube = count(ld.placed, segs, _params(q).tick_s)
     tm["count"] = round(time.time() - t, 3)
     t = time.time()
-    an, hd = _analyse(cube, ld, segs, q, dates[0], dates[-1], dates)
+    an, hd = _analyse(cube, ld, segs, q, dates[0], dates[-1], dates, data)
     tm["analyse"] = round(time.time() - t, 3)
     return Run(query=q, dates=dates, holidays=hd, net=ld.net, segments=segs, analysis=an, coverage=ld.coverage,
                placed=ld.placed, passages=ld.passages, timings=tm, zones=ld.zones,
                mode=route_mode(data, q.line, dates) if with_mode else None)
 
 
-def _relabel_holidays(excluded: list[dict], holidays: dict) -> None:
+def _relabel(excluded: list[dict], days: dict) -> None:
+    """The package says "excluded" for every day the platform left out: give the reason (holiday,
+    school_holiday, reduced_service, user_period) and its label instead."""
     for e in excluded:
         d = dt.date.fromisoformat(e["date"])
-        if d in holidays:
-            e["reason"] = "holiday"
-            e["label"] = holidays[d]
+        if d in days:
+            e["reason"], label = days[d]
+            if label:
+                e["label"] = label
+
+
+def _relabel_inc(cv: dict, days: dict) -> None:
+    if "inc" in cv:
+        cv["inc"] = [days[dt.date.fromisoformat(d)][0] if v == "excluded" and dt.date.fromisoformat(d) in days else v
+                     for d, v in zip(cv.get("dates", []), cv["inc"])]
 
 
 SHOW_HOTSPOTS = False     # the site does not show the package's hotspots (page option show_hotspots)
@@ -259,12 +302,9 @@ def contract(r: Run) -> dict:
                          title=f"Ligne {q.line}", names="title")
     out["show_hotspots"] = SHOW_HOTSPOTS
     out.update(EMBED)
-    # holidays are excluded on purpose: say so instead of the generic "excluded"
-    _relabel_holidays(out.get("period", {}).get("excluded", []), r.holidays)
-    cv = out.get("coverage", {})
-    if "inc" in cv:
-        cv["inc"] = ["holiday" if v == "excluded" and dt.date.fromisoformat(d) in r.holidays else v
-                     for d, v in zip(cv.get("dates", []), cv["inc"])]
+    # holidays, school holidays, ... are excluded on purpose: say so instead of the generic "excluded"
+    _relabel(out.get("period", {}).get("excluded", []), r.holidays)
+    _relabel_inc(out.get("coverage", {}), r.holidays)
     out["tiles"] = True
     out["query"] = q.canonical()
     out["algo"] = ALGO_VERSION
@@ -288,6 +328,9 @@ class CompareQuery:
     ref: tuple[int, int] = (20, 23)
     hours: tuple[int, int] = (5, 24)
     B: int = 100                         # bootstrap draws (difference CI and period-B hotspots)
+    school: str = "include"
+    reduced: str = "include"
+    exclude: tuple = ()                  # user periods, applied to both A and B
 
     def __post_init__(self):
         for name, (x, y) in (("a", self.a), ("b", self.b)):
@@ -297,7 +340,7 @@ class CompareQuery:
                 raise ValueError(f"{name}: period longer than 400 days")
         # the single-period checks (seg, grid, dow, ...)
         Query(self.line, self.b[0], self.b[1], self.dow, self.holidays, self.seg, self.phase, self.grid,
-              self.stopzone, self.ref)
+              self.stopzone, self.ref, school=self.school, reduced=self.reduced, exclude=self.exclude)
 
     @property
     def first(self) -> dt.date:
@@ -308,7 +351,7 @@ class CompareQuery:
         return max(self.a[1], self.b[1])
 
     def canonical(self) -> dict:
-        d = asdict(self)
+        d = _days_canonical(self, asdict(self), self.first, self.last)
         d["a"] = [self.a[0].isoformat(), self.a[1].isoformat()]
         d["b"] = [self.b[0].isoformat(), self.b[1].isoformat()]
         d["dow"] = sorted(set(self.dow))
@@ -357,8 +400,8 @@ def run_compare(data: Data, cq: CompareQuery) -> dict:
     cube = count(ld.placed, segs, _params(cq).tick_s)
     tm["segment_count"] = round(time.time() - t, 3)
     t = time.time()
-    an_a, hd_a = _analyse(cube, ld, segs, cq, da[0], da[-1], da)
-    an_b, hd_b = _analyse(cube, ld, segs, cq, db[0], db[-1], db)
+    an_a, hd_a = _analyse(cube, ld, segs, cq, da[0], da[-1], da, data)
+    an_b, hd_b = _analyse(cube, ld, segs, cq, db[0], db[-1], db, data)
     tm["analyse"] = round(time.time() - t, 3)
     if not an_a.days or not an_b.days:
         which = "A" if not an_a.days else "B"
@@ -376,9 +419,10 @@ def run_compare(data: Data, cq: CompareQuery) -> dict:
     out["compare"] = cmp.to_contract(names)
     out["show_hotspots"] = SHOW_HOTSPOTS
     out.update(EMBED)
-    _relabel_holidays(out.get("period", {}).get("excluded", []), hd_b)
-    _relabel_holidays(out["compare"]["a"]["excluded"], hd_a)
-    _relabel_holidays(out["compare"]["b"]["excluded"], hd_b)
+    _relabel(out.get("period", {}).get("excluded", []), hd_b)
+    _relabel(out["compare"]["a"]["excluded"], hd_a)
+    _relabel(out["compare"]["b"]["excluded"], hd_b)
+    _relabel_inc(out.get("coverage", {}), hd_b)
     out["tiles"] = True
     out["query"] = cq.canonical()
     out["algo"] = ALGO_VERSION
@@ -397,7 +441,7 @@ def result_table(r: Run) -> pl.DataFrame:
 
 def coverage_days(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]:
     """Per date: feed coverage over 6-21 h, hours below 80 %, the line's counted observations,
-    holiday name. ``status``: ok | low_coverage | no_data | line_absent | not_derived (ingested, month
+    holiday name, STIB service category (``schedule``: school_holiday | reduced_service | null). ``status``: ok | low_coverage | no_data | line_absent | not_derived (ingested, month
     not derived yet) | not_ingested."""
     from microsegments.config import Quality
     qual = Quality()
@@ -419,6 +463,10 @@ def coverage_days(data: Data, line: str, first: dt.date, last: dt.date) -> list[
     if pl_ is not None:
         obs = dict(pl_.group_by("service_date").len().iter_rows())
     hd = hol.between(first, last)
+    try:
+        cats = schedule.categories(data, first, last)
+    except Exception:  # noqa: BLE001 - the coverage answers without the categories
+        cats = {}
     have = data.derived_months()
     out = []
     for d in dates:
@@ -436,11 +484,16 @@ def coverage_days(data: Data, line: str, first: dt.date, last: dt.date) -> list[
         else:
             status = "ok"
         out.append({"date": d.isoformat(), "dow": d.weekday(), "coverage": None if c is None else round(c, 3),
-                    "hours_bad": bad, "hours_line_absent": absent, "obs": int(obs.get(d, 0)), "holiday": hd.get(d), "status": status})
+                    "hours_bad": bad, "hours_line_absent": absent, "obs": int(obs.get(d, 0)), "holiday": hd.get(d),
+                    "service": cats.get(d), "status": status})
     return out
 
 
 def versions(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]:
+    """Main-pattern versions per direction, with their stop names and what changes against the
+    direction's reference (the version with the most stops, the latest on a tie): ``ref`` true on it,
+    ``removed`` / ``added`` stop names elsewhere."""
+    from microsegments.report import title_name
     dates = [d for d in date_range(first, last) if d in set(data.ingested_dates())]
     if not dates:
         return []
@@ -455,5 +508,14 @@ def versions(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]
         names = r.pop("stop_names") or []
         r["first"], r["last"] = r["first"].isoformat(), r["last"].isoformat()
         r["from"], r["to"], r["n_stops"] = (names[0] if names else None), (names[-1] if names else None), len(names)
+        r["stops"] = [title_name(n) for n in names]
         out.append(r)
+    for dr in {r["direction_id"] for r in out}:
+        vs = [r for r in out if r["direction_id"] == dr]
+        ref = max(vs, key=lambda r: (r["n_stops"], r["last"], r["first"]))
+        for r in vs:
+            r["ref"] = r is ref
+            have = set(r["stops"])
+            r["removed"] = [] if r["ref"] else [n for n in ref["stops"] if n not in have]
+            r["added"] = [] if r["ref"] else [n for n in r["stops"] if n not in set(ref["stops"])]
     return out

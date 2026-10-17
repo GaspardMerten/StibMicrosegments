@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>STIB microsegments</title>
-<meta name="description" content="Où les trams, bus et métros de la STIB perdent-ils du temps ? Temps passé par véhicule sur chaque tronçon de 30 m, comparaison de périodes et classement du réseau.">
+<meta name="description" content="Où les trams, bus et métros de la STIB perdent-ils du temps ? Vitesse moyenne des véhicules sur chaque tronçon de 30 m, comparaison de périodes et classement du réseau.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -107,8 +107,31 @@ details.more .opts { display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:10p
 .cov { display:flex; flex-wrap:wrap; gap:6px 18px; align-items:center; font-size:14px; color:var(--ink-2); margin:6px 0; }
 .cov .strip { display:flex; flex-wrap:wrap; gap:2px; }
 .cov .strip i { width:9px; height:14px; border-radius:2px; display:block; }
-.legend { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--ink-3); }
+.legend { display:flex; gap:4px 12px; flex-wrap:wrap; font-size:12px; color:var(--ink-3); }
 .legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; }
+/* data quality: days kept (coloured strip + legend) and the analysis' numbers */
+.dq { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:10px 14px; margin:8px 0; }
+.dq .cov { margin:0 0 6px; }
+.dq .nums { display:flex; flex-wrap:wrap; gap:2px 18px; font-size:14px; color:var(--ink-2); margin:0 0 6px; }
+.dq .nums b, .dq .cov b { color:var(--ink); font-variant-numeric:tabular-nums; }
+/* route changes in the period */
+.routes { background:var(--surface); border:1px solid var(--line); border-left:3px solid #4f8fd8; border-radius:10px; padding:10px 14px; margin:8px 0; font-size:14px; color:var(--ink-2); }
+.routes > b { color:var(--ink); }
+.routes ul { list-style:none; margin:6px 0 0; padding:0; }
+.routes li { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; justify-content:space-between; padding:6px 0; border-top:1px solid var(--line); }
+.routes li b { color:var(--ink); font-weight:600; }
+.routes .acts { display:flex; gap:6px; flex-wrap:wrap; }
+.mini { background:transparent; border:1px solid var(--line); color:var(--ink-2); border-radius:8px; padding:3px 10px; font-size:13px; min-height:32px; cursor:pointer; }
+.mini:hover:not(:disabled) { color:var(--ink); border-color:var(--ink-3); }
+.mini:disabled { opacity:.55; cursor:default; }
+.mini:focus-visible { outline:2px solid #fff; outline-offset:2px; }
+/* excluded days: categories + periods */
+.xcat { display:flex; gap:0 14px; flex-wrap:wrap; }
+.xper { display:flex; flex-direction:column; gap:6px; }
+.xchips { display:flex; flex-wrap:wrap; gap:6px; }
+.xchip { display:inline-flex; align-items:center; gap:2px; border:1px solid var(--line); border-radius:999px; padding:1px 2px 1px 10px; font-size:13px; color:var(--ink); background:var(--surface-2); }
+.xchip button { border:0; background:none; color:var(--ink-3); cursor:pointer; width:26px; height:26px; border-radius:50%; font-size:16px; line-height:1; }
+.xchip button:hover { color:var(--ink); }
 
 /* ---------------------------------------------------------------- analysis frame */
 #view { margin-top:6px; }
@@ -217,18 +240,19 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
         </div>
         <button class="go" id="go" type="submit">Afficher</button>
         <div class="presets" id="presets" style="flex-basis:100%"></div>
-        <details class="more">
-          <summary>Options : jours, jours fériés, référence soirée</summary>
+        <details class="more" id="fmore">
+          <summary>Options : jours, exclusions</summary>
           <div class="opts">
             <div class="fld"><span>Jours</span><div class="dow" id="dow"></div></div>
-            <label class="fld"><span>Jours fériés</span><select id="holidays"><option value="exclude">exclus</option><option value="include">inclus</option></select></label>
-            <label class="fld"><span>Référence : soirée</span><select id="ref"><option value="20-23">20–23 h</option><option value="21-23">21–23 h</option></select></label>
+            <div class="fld"><span>Exclure</span><div class="xcat" id="xcat"></div></div>
+            <div class="fld"><span>Périodes exclues</span><div class="xper" id="xper"></div></div>
           </div>
         </details>
       </form>
     </div>
     <div id="status" role="status" aria-live="polite"></div>
     <div id="notes"></div>
+    <div id="routes"></div>
     <div id="view"></div>
   </section>
 
@@ -245,10 +269,12 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
         <div class="rkopts">
           <label class="check"><input type="checkbox" id="rterm"> Inclure les terminus et les attentes pour l'horaire</label>
         </div>
-        <details class="more">
-          <summary>Options : jours</summary>
+        <details class="more" id="rmore">
+          <summary>Options : jours, exclusions</summary>
           <div class="opts">
             <div class="fld"><span>Jours</span><div class="dow" id="rdow"></div></div>
+            <div class="fld"><span>Exclure</span><div class="xcat" id="rxcat"></div></div>
+            <div class="fld"><span>Périodes exclues</span><div class="xper" id="rxper"></div></div>
           </div>
         </details>
       </form>
@@ -310,6 +336,76 @@ function dowSet(el, s) {
   el.querySelectorAll("input").forEach(i => i.checked = set.has(+i.value));
 }
 
+// ---------------------------------------------------------------- excluded days (categories + periods)
+// API defaults: holidays excluded, school holidays and strikes included, no period
+const XCATS = [["holidays", "Jours fériés", ""], ["school", "Vacances scolaires", "Jours où la STIB roule en horaire de vacances"],
+  ["reduced", "Grèves", "Jours où la STIB prévoit un service réduit"]];
+const MON3 = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+const fday = (s, y) => { const d = new Date(s + "T12:00:00Z"); return `${d.getUTCDate() === 1 ? "1er" : d.getUTCDate()} ${MON3[d.getUTCMonth()]}${y ? " " + d.getUTCFullYear() : ""}`; };
+const fspan = (a, b) => a === b ? fday(a, true) : `${fday(a, a.slice(0, 4) !== b.slice(0, 4))} → ${fday(b, true)}`;
+function makeExcl(cat, per) {
+  let P = [];
+  cat.innerHTML = XCATS.map(([k, t, h]) => `<label class="check"${h ? ` title="${h}"` : ""}><input type="checkbox" value="${k}"${k === "holidays" ? " checked" : ""}> ${t}</label>`).join("");
+  per.innerHTML = `<div class="xchips"></div><div class="dates"><input type="date" aria-label="Exclure du"><em>→</em><input type="date" aria-label="au"><button type="button" class="mini">Ajouter</button></div>`;
+  const chips = per.querySelector(".xchips"), [ia, ib] = per.querySelectorAll("input"), add = per.querySelector("button");
+  const box = k => cat.querySelector(`input[value=${k}]`);
+  const draw = () => {
+    chips.hidden = !P.length;
+    chips.innerHTML = P.map(([a, b], i) => `<span class="xchip">${fspan(a, b)}<button type="button" data-i="${i}" aria-label="Ne plus exclure ${fspan(a, b)}">×</button></span>`).join("");
+  };
+  const norm = () => {      // sorted, overlapping or adjacent periods merged
+    const out = [];
+    for (const [a, b] of P.slice().sort((x, y) => x[0] < y[0] ? -1 : 1)) {
+      const last = out[out.length - 1];
+      if (last && a <= addDays(last[1], 1)) { if (b > last[1]) last[1] = b; } else out.push([a, b]);
+    }
+    P = out;
+  };
+  chips.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; P.splice(+b.dataset.i, 1); draw(); });
+  ia.addEventListener("change", () => { if (ia.value && (!ib.value || ib.value < ia.value)) ib.value = ia.value; });
+  add.addEventListener("click", () => { if (!ia.value) return; X.add(ia.value, ib.value || ia.value); ia.value = ib.value = ""; });
+  const X = {
+    add(a, b) { if (b < a) [a, b] = [b, a]; P.push([a, b]); norm(); draw(); },
+    covers: (a, b) => P.some(([x, y]) => x <= a && b <= y),
+    on: k => box(k).checked,
+    setRange(min, max) { for (const i of [ia, ib]) { i.min = min || ""; i.max = max || ""; } },
+    // the API parameters that differ from its defaults
+    params(p) {
+      if (!X.on("holidays")) p.set("holidays", "include");
+      if (X.on("school")) p.set("school", "exclude");
+      if (X.on("reduced")) p.set("reduced", "exclude");
+      if (P.length) p.set("exclude", P.map(([a, b]) => a === b ? a : `${a}..${b}`).join(","));
+      return p;
+    },
+    // from URL parameters; true when something differs from the defaults
+    load(u) {
+      box("holidays").checked = u.get("holidays") !== "include";
+      box("school").checked = u.get("school") === "exclude";
+      box("reduced").checked = u.get("reduced") === "exclude";
+      // real dates only (2025-02-30 is dropped), each period in order
+      const real = d => /^\d{4}-\d\d-\d\d$/.test(d) && !isNaN(new Date(d + "T12:00:00Z")) && iso(new Date(d + "T12:00:00Z")) === d;
+      P = (u.get("exclude") || "").split(",").map(x => x.split("..")).filter(p => p.length <= 2 && p.every(real))
+        .map(([a, b = a]) => [a, b]).filter(([a, b]) => a <= b);
+      norm(); draw();
+      return !box("holidays").checked || box("school").checked || box("reduced").checked || P.length > 0;
+    },
+    // why a day of /api/coverage is left out on purpose (the API's order), or null; frozen at the
+    // time of the call (a run keeps the choices it was started with)
+    reasonFn() {
+      const on = Object.fromEntries(XCATS.map(([k]) => [k, X.on(k)])), per = P.map(p => p.slice());
+      return d => {
+        if (d.holiday && on.holidays) return "holiday";
+        if (d.service === "reduced_service" && on.reduced) return "reduced_service";
+        if (d.service === "school_holiday" && on.school) return "school_holiday";
+        return per.some(([a, b]) => a <= d.date && d.date <= b) ? "user_period" : null;
+      };
+    },
+  };
+  draw();
+  return X;
+}
+const XL = makeExcl($("xcat"), $("xper")), XR = makeExcl($("rxcat"), $("rxper"));
+
 // ---------------------------------------------------------------- lines
 const lineOf = id => LINES.find(l => l.line === id);
 const modeKey = l => /^N/i.test(l.line) ? "night" : (l.mode === "metro" || l.mode === "tram" || l.mode === "bus" ? l.mode : "autre");
@@ -343,11 +439,12 @@ function setLine(id, keepDates) {
   $("linebtn").dataset.line = id;
   $("linebadge").outerHTML = badge(l, "lb").replace('class="lb"', 'class="lb" id="linebadge"');
   $("linename").textContent = l ? niceName(l.name) || "Ligne " + id : "Ligne " + id;
-  const av = l && l.available;
+  // the whole collection range (not the line's): a period kept across lines stays valid in the form
   for (const k of ["from", "to", "a1", "a2", "b1", "b2"]) {
-    $(k).min = av ? av.from : (INFO && INFO.ingested.from) || "";
-    $(k).max = av ? av.to : (INFO && INFO.ingested.to) || "";
+    $(k).min = (INFO && INFO.ingested.from) || "";
+    $(k).max = (INFO && INFO.ingested.to) || "";
   }
+  XL.setRange(INFO && INFO.ingested.from, INFO && INFO.ingested.to);
   if (!keepDates || !$("from").value) defaultDates(l);
   presets();
 }
@@ -365,7 +462,7 @@ function presets() {
   if (!av || TAB !== "one") { $("presets").innerHTML = ""; return; }
   const ms = av.months.filter(m => monthEnd(m) <= av.to);
   const opts = [];
-  if (ms.length) opts.push(["Dernier mois complet", ms[ms.length - 1] + "-01", monthEnd(ms[ms.length - 1])]);
+  if (ms.length) opts.push(["Dernier mois", ms[ms.length - 1] + "-01", monthEnd(ms[ms.length - 1])]);
   if (ms.length >= 3) opts.push(["3 derniers mois", ms[ms.length - 3] + "-01", monthEnd(ms[ms.length - 1])]);
   if (ms.length >= 6) opts.push(["6 derniers mois", ms[ms.length - 6] + "-01", monthEnd(ms[ms.length - 1])]);
   opts.push(["30 derniers jours", addDays(av.to, -29), av.to]);
@@ -396,7 +493,7 @@ $("lsearch").addEventListener("keydown", e => {
 });
 $("lgroups").addEventListener("click", e => {
   const c = e.target.closest(".chip"); if (!c) return;
-  setLine(c.dataset.line, false); closePanel(); runLine();
+  setLine(c.dataset.line, true); closePanel(); runLine();     // period, days and exclusions are kept
 });
 function closePanel() { $("panel").hidden = true; $("linebtn").setAttribute("aria-expanded", "false"); }
 document.addEventListener("click", e => { if (!e.target.closest(".picker")) closePanel(); });
@@ -429,10 +526,8 @@ function lineParams() {
   if (TAB === "cmp") { p.set("a", `${$("a1").value}..${$("a2").value}`); p.set("b", `${$("b1").value}..${$("b2").value}`); }
   else { p.set("from", $("from").value); p.set("to", $("to").value); }
   p.set("dow", dowGet($("dow")));
-  // segments are always 30 m on the site (the API still takes seg=)
-  if ($("holidays").value !== "exclude") p.set("holidays", $("holidays").value);
-  if ($("ref").value !== "20-23") p.set("ref", $("ref").value);
-  return p;
+  // segments are always 30 m and the reference 20-23 h on the site (the API still takes seg= and ref=)
+  return XL.params(p);
 }
 
 // ---------------------------------------------------------------- status
@@ -449,27 +544,72 @@ function busy(el, msg, hint) {
 }
 function done(el, msg, err) { clearInterval(TIMER); el.className = err ? "err" : ""; el.innerHTML = msg ? `<span>${msg}</span>` : ""; }
 
-// ---------------------------------------------------------------- coverage summary
-const REASONS = {low_coverage: "flux incomplet", no_data: "pas de données", frozen: "flux figé", holiday: "férié",
-  line_absent: "ligne absente du flux", not_ingested: "non collecté", not_derived: "en préparation", deviation: "déviation"};
-const COL = {ok: "#5fc48a", low_coverage: "#e7a33e", line_absent: "#c0392b", no_data: "#c0392b", not_ingested: "#3a4560", not_derived: "#4f8fd8", holiday: "#8e5bb5", off: "#26324d"};
-function covSummary(days, dows, holidays, label) {
-  const sel = days.filter(d => dows.has(d.dow));
-  const cls = d => d.holiday && holidays === "exclude" ? "holiday" : d.status;
-  const ok = sel.filter(d => cls(d) === "ok").length;
-  const by = {};
-  for (const d of sel) if (cls(d) !== "ok") (by[cls(d)] ||= []).push(d);
-  const strip = days.map(d => `<i style="background:${dows.has(d.dow) ? COL[cls(d)] || "#c0392b" : COL.off}" title="${d.date} · ${DOW[d.dow]} · ${dows.has(d.dow) ? (cls(d) === "ok" ? "retenu" : (d.holiday ? d.holiday : REASONS[d.status] || d.status)) : "non sélectionné"}"></i>`).join("");
-  const parts = Object.entries(by).map(([k, v]) => `${v.length} ${REASONS[k] || k}${k === "not_ingested" && v.length > 1 ? "s" : ""}`);
-  return {ok, sel: sel.length, by, html: `<div class="cov">${label ? `<b>${label}</b>` : ""}<span><b>${ok}</b> jour${ok > 1 ? "s" : ""} retenu${ok > 1 ? "s" : ""} sur ${sel.length}${parts.length ? " (" + parts.join(", ") + ")" : ""}</span><span class="strip">${strip}</span></div>`};
+// ---------------------------------------------------------------- data quality
+// One coloured square per day. Before the analysis: /api/coverage and the chosen exclusions; once the
+// frame has loaded, its contract ({ms: "summary"}) says which days the analysis kept and why the others went.
+const REASONS = {low_coverage: ["flux incomplet", "flux incomplet"], frozen: ["flux figé", "flux figé"], no_data: ["sans données", "sans données"],
+  line_absent: ["ligne absente du flux", "ligne absente du flux"], deviation: ["hors itinéraire", "hors itinéraire"],
+  vehicle_ratio: ["nombre de véhicules anormal", "nombre de véhicules anormal"], holiday: ["férié", "fériés"],
+  school_holiday: ["en vacances scolaires", "en vacances scolaires"], reduced_service: ["de grève", "de grève"],
+  user_period: ["en période exclue", "en période exclue"], excluded: ["exclu", "exclus"],
+  not_ingested: ["non collecté", "non collectés"], not_derived: ["en préparation", "en préparation"]};
+const COL = {ok: "#5fc48a", holiday: "#8e5bb5", school_holiday: "#3aa6b9", reduced_service: "#d07a3a", user_period: "#8a93a8",
+  low_coverage: "#e7a33e", frozen: "#e7a33e", line_absent: "#c0392b", no_data: "#c0392b", deviation: "#c0392b", vehicle_ratio: "#c0392b",
+  not_ingested: "#3a4560", not_derived: "#4f8fd8", off: "#26324d"};
+// legend: one entry per colour shown
+const LEGEND = [["ok", "retenu"], ["holiday", "férié"], ["school_holiday", "vacances scolaires"], ["reduced_service", "grève"],
+  ["user_period", "période exclue"], ["low_coverage", "flux incomplet"], ["line_absent", "ligne absente, sans données ou hors itinéraire"],
+  ["not_derived", "en préparation"], ["not_ingested", "non collecté"], ["off", "jour non sélectionné"]];
+const colOf = k => COL[k] || COL.line_absent;
+const big = v => v >= 1e6 ? `${nf(v / 1e6, 1)} million${v >= 2e6 ? "s" : ""}` : nf(v);
+let QUAL = null;      // {periods: [[label, days]], dows, reason: the run's days and exclusions, sum: the frame's summary or null}
+function dowsSel() {
+  const checked = [...$("dow").querySelectorAll("input:checked")].map(x => +x.value);
+  return new Set(checked.length ? checked : [0, 1, 2, 3, 4]);
 }
-function covNotes(sum, from, to) {
+function covSummary(days, dows, reason, label, ps) {
+  const ex = ps ? Object.fromEntries((ps.excluded || []).map(e => [e.date, e.reason])) : null;
+  const cls = d => {
+    if (!dows.has(d.dow)) return "off";
+    if (!ex) return reason(d) || d.status;
+    if (ex[d.date]) return ex[d.date] === "excluded" ? (reason(d) || "user_period") : ex[d.date];
+    return d.status === "not_ingested" || d.status === "not_derived" ? d.status : "ok";
+  };
+  const sel = days.filter(d => dows.has(d.dow));
+  const ok = ps ? ps.days : sel.filter(d => cls(d) === "ok").length;
+  const by = {}, seen = new Set();
+  for (const d of days) seen.add(colOf(cls(d)));
+  for (const d of sel) if (cls(d) !== "ok") (by[cls(d)] ||= []).push(d);
+  const why = d => cls(d) === "off" ? "non sélectionné" : cls(d) === "ok" ? "retenu"
+    : (d.holiday && cls(d) === "holiday" ? d.holiday : (REASONS[cls(d)] || [cls(d)])[0]);
+  const strip = days.map(d => `<i style="background:${colOf(cls(d))}" title="${d.date} · ${DOW[d.dow]} · ${esc(why(d))}"></i>`).join("");
+  const parts = Object.entries(by).map(([k, v]) => `${v.length} ${(REASONS[k] || [k, k])[v.length > 1 ? 1 : 0]}`);
+  return {ok, sel: sel.length, by, seen, html: `<div class="cov">${label ? `<b class="${label === "A" ? "pa" : "pb"}">${label}</b>` : ""}<span><b>${nf(ok)}</b> jour${ok > 1 ? "s" : ""} retenu${ok > 1 ? "s" : ""} sur ${sel.length}${parts.length ? " (" + parts.join(", ") + ")" : ""}</span><span class="strip">${strip}</span></div>`};
+}
+function drawQuality() {
+  if (!QUAL) return;
+  const dows = QUAL.dows, sum = QUAL.sum, seen = new Set();
+  const covs = QUAL.periods.map(([label, days], i) => {
+    const ps = sum ? (sum.compare ? sum.compare[i ? "b" : "a"] : sum.period) : null;
+    const c = covSummary(days, dows, QUAL.reason, label, ps);
+    c.seen.forEach(x => seen.add(x));
+    return c;
+  });
+  const nums = sum ? `<div class="nums"><span><b>${nf(sum.segs)}</b> microsegments de ${nf(sum.seg_m || 30)} m (deux sens)</span>${sum.compare ? "" : `<span><b>${big(sum.obs)}</b> signalements sur la période</span>`}</div>` : "";
+  const legend = LEGEND.filter(([k]) => seen.has(colOf(k))).map(([k, t]) => `<span><i style="background:${colOf(k)}"></i>${t}</span>`).join("");
+  const merged = {ok: 0, sel: 0, by: {}};
+  for (const c of covs) { merged.ok += c.ok; merged.sel += c.sel; for (const [k, v] of Object.entries(c.by)) (merged.by[k] ||= []).push(...v); }
+  $("notes").innerHTML = `<div class="dq">${covs.map(c => c.html).join("")}${nums}<div class="legend">${legend}</div></div>` + covNotes(merged);
+  return covs;
+}
+function covNotes(sum) {
   const notes = [];
   const nd = sum.by.not_derived || [], ni = sum.by.not_ingested || [];
   if (nd.length) {
     const ms = [...new Set(nd.map(d => d.date.slice(0, 7)))].map(fmonth);
     notes.push(`<div class="notice info"><b>Données en cours de préparation.</b> Les signalements de ${ms.join(", ")} sont collectés mais pas encore calculés${sum.ok ? " : ces jours-là sont laissés de côté pour l'instant" : ""}. Le calcul tourne en arrière-plan ; réessayez dans quelques minutes.</div>`);
   }
+  const to = QUAL.periods.map(p => (p[1][p[1].length - 1] || {}).date || "").sort().pop();
   if (ni.length && ni.length === sum.sel) notes.push(INFO.ingested.from && to < INFO.ingested.from
     ? `<div class="notice"><b>Pas de données</b> pour cette période : la collecte commence le ${fdate(INFO.ingested.from)}.</div>`
     : `<div class="notice"><b>Pas encore de données</b> pour cette période : la collecte va jusqu'au ${fdate(INFO.ingested.to)}.</div>`);
@@ -503,26 +643,21 @@ async function runLine() {
   const pu = new URLSearchParams(p); if (DIR != null) pu.set("dir", DIR);
   history.replaceState(null, "", location.pathname + "?" + pu);
   const me = ++RUN;
-  $("go").disabled = true; $("notes").innerHTML = "";
+  $("go").disabled = true; $("notes").innerHTML = ""; $("routes").innerHTML = ""; QUAL = null; ROUTES = null;
   const elapsed = busy($("status"), TAB === "cmp" ? `Comparaison de la ligne ${esc(line)}` : `Calcul de la ligne ${esc(line)}`,
     TAB === "cmp" ? "une comparaison prend jusqu'à une minute la première fois" : "la première fois, quelques mois prennent 10 à 40 s");
   try {
-    const checked = [...$("dow").querySelectorAll("input:checked")].map(x => +x.value);
-    const dows = new Set(checked.length ? checked : [0, 1, 2, 3, 4]);
+    const dows = dowsSel(), reason = XL.reasonFn();     // as when the run starts, whatever the form says later
     const periods = TAB === "cmp" ? [["A", $("a1").value, $("a2").value], ["B", $("b1").value, $("b2").value]] : [["", $("from").value, $("to").value]];
     for (const [, a, b] of periods) if (!a || !b || a > b) throw new Error("Choisissez des dates de début et de fin dans l'ordre.");
-    const covs = await Promise.all(periods.map(([, a, b]) => getJSON(`/api/coverage?line=${encodeURIComponent(line)}&from=${a}&to=${b}`)));
+    const L = encodeURIComponent(line);
+    const span = [periods.map(x => x[1]).sort()[0], periods.map(x => x[2]).sort().pop()];
+    // route versions: optional, never blocks the analysis
+    getJSON(`/api/versions?line=${L}&from=${span[0]}&to=${span[1]}`).then(r => { if (me === RUN) { ROUTES = r.body.versions || []; drawRoutes(); } }).catch(() => {});
+    const covs = await Promise.all(periods.map(([, a, b]) => getJSON(`/api/coverage?line=${L}&from=${a}&to=${b}`)));
     if (me !== RUN) return;
-    let html = "", usable = true;
-    const merged = {ok: 0, sel: 0, by: {}};
-    covs.forEach((c, i) => {
-      const s = covSummary(c.body.days, dows, $("holidays").value, periods[i][0] ? `Période ${periods[i][0]}` : "");
-      html += s.html;
-      merged.ok += s.ok; merged.sel += s.sel;
-      for (const [k, v] of Object.entries(s.by)) (merged.by[k] ||= []).push(...v);
-      if (!s.ok) usable = false;
-    });
-    $("notes").innerHTML = html + covNotes(merged, null, periods.map(x => x[2]).sort().pop());
+    QUAL = {periods: covs.map((c, i) => [periods[i][0], c.body.days]), dows, reason, sum: null};
+    const usable = drawQuality().every(c => c.ok > 0);
     if (!usable) {
       done($("status"), "Aucun jour retenu : choisissez une autre période ou d'autres jours.", true);
       $("view").innerHTML = ""; $("go").disabled = false; return;
@@ -542,6 +677,7 @@ function showFrame(p, me, elapsed) {
     const onMsg = ev => {
       if (ev.source !== fr.contentWindow || !ev.data || !ev.data.ms) return;
       if (ev.data.ms === "height") { fr.style.height = ev.data.h + "px"; return; }   // the frame takes its page's height
+      if (ev.data.ms === "summary") { if (me === RUN && QUAL) { QUAL.sum = ev.data; drawQuality(); } return; }
       if (ev.data.ms === "dirs") {
         const ds = ev.data.dirs || [], want = ds.some(d => d.dir === DIR) ? DIR : ev.data.dir;
         drawSens(ds, want);
@@ -560,6 +696,50 @@ function showFrame(p, me, elapsed) {
 }
 $("f").addEventListener("submit", e => { e.preventDefault(); runLine(); });
 
+// ---------------------------------------------------------------- route changes in the period
+// /api/versions: per direction, the main route versions; the reference is the one with the most stops.
+// A change period lists, per direction, the stops it drops or adds; its buttons show it in the frame
+// ({ms: "ver", uid}) or add its days to the excluded periods.
+let ROUTES = null, RGROUPS = [];
+function changeTxt(x) {
+  const list = a => a.slice(0, 3).map(esc).join(", ") + (a.length > 3 ? "…" : "");
+  const n = (k, w) => `${k} arrêt${k > 1 ? "s" : ""} ${w}`;
+  const out = [];
+  if (x.removed.length) out.push(`${n(x.removed.length, "en moins")} : ${list(x.removed)}`);
+  if (x.added.length) out.push(`${x.removed.length ? `${x.added.length} en plus` : n(x.added.length, "en plus")} : ${list(x.added)}`);
+  return out.join(" ; ");
+}
+function drawRoutes() {
+  const v = ROUTES || [];
+  // versions with the reference's stops (shape edits) are not a change
+  const changed = v.filter(x => x.removed.length || x.added.length);
+  if (!changed.length) { $("routes").innerHTML = ""; return; }
+  const ndir = new Set(v.map(x => x.direction_id)).size;
+  const refs = v.filter(x => x.ref);
+  const refTo = d => { const r = refs.find(x => x.direction_id === d); return r ? r.stops[r.stops.length - 1] : ""; };
+  const g = new Map();
+  for (const x of changed) { const k = x.first + ".." + x.last; if (!g.has(k)) g.set(k, []); g.get(k).push(x); }
+  RGROUPS = [...g.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([k, xs]) => ({a: k.split("..")[0], b: k.split("..")[1], xs}));
+  if (refs.length) RGROUPS.push({a: refs[0].first, b: refs[0].last, xs: refs});
+  $("routes").innerHTML = `<div class="routes"><b>Changements de tracé sur la période</b><ul>${RGROUPS.map((gr, i) => {
+    const ch = gr.xs.filter(x => !x.ref), ex = XL.covers(gr.a, gr.b);
+    const what = ch.length ? ch.map(x => (ndir > 1 ? `vers ${esc(refTo(x.direction_id))} : ` : "") + changeTxt(x)).join(" · ") : "tracé de référence";
+    // compare: the frame shows the comparison, not one route version
+    return `<li><span><b>${fspan(gr.a, gr.b)}</b> · ${what}</span><span class="acts">${TAB === "cmp" ? "" : `<button type="button" class="mini" data-show="${i}">Voir ce tracé</button>`}${ch.length
+      ? `<button type="button" class="mini" data-excl="${i}"${ex ? " disabled" : ""}>${ex ? "Période exclue" : "Exclure cette période"}</button>` : ""}</span></li>`;
+  }).join("")}</ul></div>`;
+}
+$("routes").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.show != null) {
+    const xs = RGROUPS[+b.dataset.show].xs, x = xs.find(y => y.direction_id === DIR) || xs[0];
+    if (FRAME && FRAME.contentWindow) { FRAME.contentWindow.postMessage({ms: "ver", uid: x.pattern_uid}, "*"); FRAME.scrollIntoView({behavior: "smooth", block: "start"}); }
+  } else if (b.dataset.excl != null) {
+    const gr = RGROUPS[+b.dataset.excl];
+    XL.add(gr.a, gr.b); $("fmore").open = true; runLine();
+  }
+});
+
 // ---------------------------------------------------------------- ranking
 const RMODES = [["all", "Tous"], ["tram", "Tram"], ["bus", "Bus"], ["metro", "Métro"]];
 $("rmode").innerHTML = RMODES.map(([k, t]) => `<button type="button" data-mode="${k}" aria-pressed="${k === "all"}">${t}</button>`).join("");
@@ -576,7 +756,7 @@ function rankParams() {
   p.set("dow", dowGet($("rdow")));
   p.set("mode", rmode()); p.set("top", $("rtop").value);
   if ($("rterm").checked) p.set("terminus", "true");
-  return p;
+  return XR.params(p);
 }
 let RMAP = null, RLAYERS = [], RK = 0;
 async function runRank() {
@@ -632,6 +812,11 @@ function drawRank(R) {
   if (!$("rto").value) $("rto").value = q.last;
   $("rlede").textContent = rlede(termIn);
   const daysTxt = q.dow.length === 5 && q.dow.join() === "0,1,2,3,4" ? "jours ouvrables" : "jours " + q.dow.map(d => DOW[d]).join(", ");
+  // days left out on purpose, worded as on the line page
+  const xd = Object.entries(R.days_excluded || {}).map(([k, n]) => `${n} ${(REASONS[k] || [k, k])[n > 1 ? 1 : 0]}`);
+  const exTxt = xd.length ? ` hors ${xd.join(", ")}` : "";
+  // the line page opens with the same days and exclusions
+  const lq = XR.params(new URLSearchParams({from: q.first, to: q.last, dow: q.dow.join(",")}));
   const modeTxt = {all: "toutes les lignes", tram: "les trams", bus: "les bus", metro: "le métro"}[q.mode];
   if (!S.length) {
     $("rout").innerHTML = `<div class="notice">Aucun tronçon à classer pour ${modeTxt} sur cette période (${R.lines_used} ligne${R.lines_used > 1 ? "s" : ""} avec des données).</div>`;
@@ -642,7 +827,7 @@ function drawRank(R) {
   const lb = x => badge(lineOf(x.line) || (R.lines || []).find(y => y.line === x.line) || {line: x.line});
   const ex = R.excluded || {n: 0, top: []};
   $("rout").innerHTML = `
-    <p class="rk-sum">Du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b>, ${daysTxt}, ${modeTxt} (${R.lines_used} lignes) :
+    <p class="rk-sum">Du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b>, ${daysTxt}${exTxt}, ${modeTxt} (${R.lines_used} lignes) :
       les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> entre les arrêts par rapport à la soirée (20–23 h),
       soit environ <b>${nf(Math.round(top * R.days_per_year / 100) * 100, 0)} heures par an</b>.</p>
     <div class="tiles">
@@ -659,14 +844,14 @@ function drawRank(R) {
         <td class="str"><b>${esc(s.from)} → ${esc(s.to)}</b>
           <small>${nf(s.len_m)} m · ${nf(s.passages_day)} passages / jour</small>
           <small class="ph-x">${nf(s.veh_h_year)} h-véh. par an · ${nf(s.s_per_passage, 0)} s perdues par véhicule</small>
-          <div class="lines">${s.lines.map(x => `<a href="/?line=${encodeURIComponent(x.line)}&from=${q.first}&to=${q.last}&dow=${q.dow.join(",")}" title="Ligne ${esc(x.line)} : ${nf(Math.max(0, x.veh_h_day), 1)} h / jour, ${PEAK[x.peak] || ""}${x.reason ? " · " + RREASON_LONG[x.reason] : ""}">${lb(x)}</a>`).join("")}</div>
+          <div class="lines">${s.lines.map(x => `<a href="/?line=${encodeURIComponent(x.line)}&${lq}" title="Ligne ${esc(x.line)} : ${nf(Math.max(0, x.veh_h_day), 1)} h / jour, ${PEAK[x.peak] || ""}${x.reason ? " · " + RREASON_LONG[x.reason] : ""}">${lb(x)}</a>`).join("")}</div>
           ${(s.reasons || []).map(r => `<span class="tag" title="${esc(RREASON_LONG[r] || r)}">${esc(RREASON[r] || r)}</span>`).join("")}
           <div class="bar-in" style="width:${Math.max(2, 100 * s.veh_h_day / max)}%"></div></td>
         <td class="n hd">${nf(s.veh_h_day, 1)}<span class="u"> h/j</span></td><td class="n">${nf(s.veh_h_year)}</td><td class="n">${nf(s.s_per_passage, 0)}</td></tr>`).join("")}</tbody></table></div>
     </div>
     ${ex.n ? `<details class="rk-ex"${PHONE.matches ? "" : " open"}><summary><b>${nf(ex.n)} tronçon${ex.n > 1 ? "s" : ""} laissé${ex.n > 1 ? "s" : ""} de côté</b> (${nf(ex.veh_h_day, 0)} h-véh. / jour)<span class="ex-why"> : terminus ou attente volontaire pour l'horaire, pas un ralentissement. Les principaux :</span></summary>
       <ul>${ex.top.map(x => `<li>${esc(x.from)} → ${esc(x.to)} (${x.lines.map(y => esc(y.line)).join(", ")}) : ${nf(x.veh_h_day, 1)} h / jour, ${nf(x.s_per_passage, 0)} s perdues par véhicule · ${x.reasons.map(r => esc(RREASON_LONG[r] || r)).join(" ; ")}</li>`).join("")}</ul></details>` : ""}
-    <p class="method">Toutes les 20 secondes, chaque véhicule STIB signale sa position ; sur chaque tronçon de 30 m, 1 signalement ≈ 20 s passées là. Temps perdu par rapport à la soirée (20–23 h, mêmes jours) par véhicule, × passages de 6 h à 21 h = temps perdu par jour. Zones d'arrêt (là où la STIB rattache le véhicule à l'arrêt, de son approche à son départ), jours fériés et jours au flux incomplet exclus. Par an : × ${R.days_per_year} jours (ordre de grandeur).</p>`;
+    <p class="method">Toutes les 20 secondes, chaque véhicule STIB signale sa position ; sur chaque tronçon de 30 m, 1 signalement ≈ 20 s passées là. Temps perdu par rapport à la soirée (20–23 h, mêmes jours) par véhicule, × passages de 6 h à 21 h = temps perdu par jour. Zones d'arrêt (là où la STIB rattache le véhicule à l'arrêt, de son approche à son départ) et jours au flux incomplet exclus, comme les jours exclus dans les options (jours fériés par défaut). Par an : × ${R.days_per_year} jours (ordre de grandeur).</p>`;
   if (RMAP) { RMAP.remove(); RMAP = null; }
   RMAP = L.map("rkmap", {scrollWheelZoom: false});
   L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
@@ -729,6 +914,8 @@ async function boot(first) {
   if (tab === "rank") {
     for (const [k, id] of [["from", "rfrom"], ["to", "rto"]]) $(id).value = u.get(k) || "";
     dowSet($("rdow"), u.get("dow"));
+    if (XR.load(u)) $("rmore").open = true;
+    XR.setRange(INFO.ingested.from, INFO.ingested.to);
     const m = u.get("mode") || "all";
     $("rmode").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.mode === m)));
     if (u.get("top")) $("rtop").value = u.get("top");
@@ -747,8 +934,7 @@ async function boot(first) {
   if (u.get("a")) { const [x, y] = u.get("a").split(".."); $("a1").value = x; $("a2").value = y; }
   if (u.get("b")) { const [x, y] = u.get("b").split(".."); $("b1").value = x; $("b2").value = y; }
   dowSet($("dow"), u.get("dow"));
-  for (const k of ["holidays", "ref"]) if (u.get(k)) $(k).value = u.get(k);
-  if (u.get("holidays") || u.get("ref")) document.querySelector("#f details").open = true;
+  if (XL.load(u)) $("fmore").open = true;
   const l = lineOf(want);
   if (l && l.available) runLine();
   else done($("status"), `La ligne ${esc(want)} n'a pas encore de données calculées : choisissez une autre ligne.`, true);
