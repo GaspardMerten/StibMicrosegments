@@ -751,10 +751,13 @@ function changeTxt(x) {
   const s = out.join(" ; ");
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+const ROUTE_MIN_DAYS = 5;
 function drawRoutes() {
   const v = ROUTES || [];
   // versions with the reference's stops are a change only with a detour or a moved stop (else: shape edits)
-  const changed = v.filter(x => x.removed.length || x.added.length || (x.detours || []).length);
+  // only periods of ROUTE_MIN_DAYS days or more are listed (a one-day short-working is no route change)
+  const changed = v.filter(x => x.removed.length || x.added.length || (x.detours || []).length)
+    .map(x => ({...x, periods: x.periods.filter(p => p.n_days >= ROUTE_MIN_DAYS)})).filter(x => x.periods.length);
   // a reference route that already ran at the start may come from a lasting change made before the period
   const lasting = v.filter(x => x.ref && x.lasting);
   if (!changed.length && !lasting.length) { $("routes").innerHTML = ""; return; }
