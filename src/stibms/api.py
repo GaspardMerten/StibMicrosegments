@@ -257,7 +257,7 @@ def _gz_response(request: Request, gz: bytes, cc: str, media="application/json",
 
 # Bump when the JSON a result holds changes without the data changing (page options such as
 # show_hotspots, contract fields): older bucket results are then ignored instead of served.
-RESULT_REV = 2
+RESULT_REV = 3
 
 
 def _cached_json(kind: str, q, compute, request: Request) -> Response:
