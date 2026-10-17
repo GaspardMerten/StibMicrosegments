@@ -257,7 +257,7 @@ def _gz_response(request: Request, gz: bytes, cc: str, media="application/json",
 
 # Bump when the JSON a result holds changes without the data changing (page options such as
 # show_hotspots, contract fields): older bucket results are then ignored instead of served.
-RESULT_REV = 5
+RESULT_REV = 6
 
 
 def rev() -> str:
@@ -486,7 +486,7 @@ def tune(request: Request, q=Depends(query), lengths: str = Q("15,20,30,40,50,75
         t = time.time()
         net, uids = r.net, sorted(r.segments["pattern_uid"].unique().to_list())
 
-        def seg_fn(L, phase=0.0, stop_zone=q.stopzone):
+        def seg_fn(L, phase=0.0, stop_zone=r.analysis.params.stop_zone):
             return segment(net, L, phase, q.grid, stop_zone, patterns=uids, geometry=False,
                            zones=r.zones if q.grid == "stops" else None)
         an = r.analysis

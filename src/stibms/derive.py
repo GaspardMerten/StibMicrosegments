@@ -4,6 +4,7 @@ per line (layout in ``stibms.data``).
     python -m stibms.derive --month 2025-03 [--lines all|55,71] [--bucket gs://b | --local DIR]
     python -m stibms.derive --from 2024-04 --to 2026-10 --coverage-only     # coverage files only
     python -m stibms.derive --from 2024-04 --to 2026-10 --linkcube-only     # ranking cubes only
+    python -m stibms.derive --from 2024-04 --to 2026-10 --passages-events-only   # event passages + cubes
 
 Steps for a month M (dates = ingested service dates of M):
 
@@ -269,6 +270,71 @@ def rewrite_linkcube(data: Data, month: str) -> dict:
     return {"month": month, "lines": out["lines"], "failed": out["failed"], "seconds": out["seconds"]}
 
 
+def rewrite_passages(data: Data, month: str, lines: list[str] | None = None) -> dict:
+    """Recompute the stop-event part of the month's passages (``n_events``, then ``n = max``) from the
+    raw punctuality files with the installed package, keep ``n_feed`` (it needs the full placed frame,
+    not stored), then rebuild the month's link cube. ``passages_rewritten_at`` goes into the month's stamp."""
+    from microsegments.io.events import read_stib_punctuality
+    from microsegments.schema import PASSAGES
+    from microsegments.tracks import event_passages
+    t0 = time.time()
+    rel = derived(f"_SUCCESS/month={month}.json")
+    try:
+        rep = data.store.read_json(rel)
+    except FileNotFoundError:
+        log.warning("%s: not derived, no passages", month)
+        return {"month": month, "lines": 0, "failed": {}}
+    ing = set(data.ingested_dates())
+    dates = [d for d in month_dates(month) if d in ing]
+    todo = sorted((ln for ln, ms_ in data.line_months().items() if month in ms_ and (lines is None or ln in lines)),
+                  key=lambda x: (len(x), x))
+    key = ["service_date", "hour", "link_key"]
+    done, failed = 0, {}
+    tmp = Path(tempfile.mkdtemp(prefix=f"passages-{month}-"))
+    try:
+        for d in dates:   # one read per day, split by line
+            prel = f"raw/punctuality/date={d}/p.parquet"
+            if not data.store.exists(prel):
+                continue
+            pu = data.store.read_parquet(prel).with_columns(pl.col("route_id").cast(pl.Utf8))
+            for (line,), g in pu.group_by("route_id"):
+                q = tmp / f"line={line}"
+                q.mkdir(parents=True, exist_ok=True)
+                g.write_parquet(q / f"{d}.parquet", compression="lz4")
+        for line in todo:
+            try:
+                prel = derived(f"passages/line={line}/month={month}.parquet")
+                old = data.read_optional(prel)
+                files = sorted((tmp / f"line={line}").glob("*.parquet"))
+                if old is None or not files:
+                    continue
+                ev = event_passages(read_stib_punctuality(files, route=line).collect(), data.network(line, dates))
+                out = (old.select(*key, "pattern_uid", "n_feed")
+                       .join(ev.select(*key, pl.col("pattern_uid").alias("_pe"), "n_events"), on=key, how="full",
+                             coalesce=True)
+                       .with_columns(pl.coalesce("pattern_uid", "_pe").alias("pattern_uid"),
+                                     pl.col("n_feed").fill_null(0.0), pl.col("n_events").fill_null(0.0))
+                       .with_columns(pl.max_horizontal("n_feed", "n_events").alias("n")))
+                out = out.select([pl.col(c).cast(t) for c, t in PASSAGES.items()]).sort(
+                    "service_date", "pattern_uid", "link_key", "hour")
+                data.store.write_parquet(prel, out)
+                done += 1
+            except Exception as e:  # noqa: BLE001 - one broken line must not block the month
+                log.exception("%s line %s passages failed", month, line)
+                failed[line] = repr(e)[:200]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    data.invalidate()
+    from . import linkcube
+    cube = linkcube.write_month(data, month)
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    rep.update({"passages_rewritten_at": now, "linkcube_rewritten_at": now, "microsegments_passages": ms.version(),
+                "linkcube": {k: cube[k] for k in ("rows", "failed")}})
+    data.store.write_json(rel, rep)
+    data.invalidate()
+    return {"month": month, "lines": done, "failed": {**failed, **cube["failed"]}, "seconds": round(time.time() - t0, 1)}
+
+
 def months_for(first: dt.date, last: dt.date) -> list[str]:
     from .data import months_between
     return months_between(first, last)
@@ -289,6 +355,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="only recompute the coverage files of the months (fast; e.g. after a package change)")
     ap.add_argument("--linkcube-only", action="store_true",
                     help="only rebuild the ranking link cubes from the derived placed / passages files")
+    ap.add_argument("--passages-events-only", action="store_true",
+                    help="only recompute the stop-event passages (n_events, n) from raw punctuality, then the link cubes")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     root = args.local or args.bucket or os.environ.get("MS_BUCKET")
@@ -309,6 +377,8 @@ def main(argv: list[str] | None = None) -> int:
             rep = rewrite_coverage(data, m)
         elif args.linkcube_only:
             rep = rewrite_linkcube(data, m)
+        elif args.passages_events_only:
+            rep = rewrite_passages(data, m, lines)
         else:
             rep = derive_month(data, m, lines, force_patterns=args.force_patterns)
         print(json.dumps({k: rep.get(k) for k in ("month", "lines", "failed", "seconds")}, default=str))

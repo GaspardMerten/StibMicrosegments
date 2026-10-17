@@ -146,7 +146,7 @@ class Loaded:
     coverage: pl.DataFrame
     net: object
     timings: dict = field(default_factory=dict)
-    zones: pl.DataFrame | None = None    # per-link exit marks (stibms.stopzones.exit_marks)
+    zones: pl.DataFrame | None = None    # (link_key, head_m): stop zone end after each stop (stibms.stopzones)
 
 
 def not_derived_months(data: Data, dates) -> list[str]:
@@ -168,22 +168,41 @@ def load(data: Data, line: str, dates: list[dt.date], label: str = "cette pério
     passages = data.passages(line, dates)
     cov = with_line_absence(data.coverage(dates), placed, dates)
     net = data.network(line, dates)
-    placed = stopzones.prepare(placed, net)
-    return Loaded(dates, placed, passages, cov, net, {"load": round(time.time() - t, 3)},
-                  zones=stopzones.exit_marks(placed))
+    mk = exit_marks(data, line, dates, placed)
+    placed = stopzones.prepare(placed, net, mk)
+    return Loaded(dates, placed, passages, cov, net, {"load": round(time.time() - t, 3)}, zones=stopzones.heads(mk))
+
+
+def exit_marks(data: Data, line: str, dates, placed: pl.DataFrame) -> pl.DataFrame:
+    """The line's exit marks over the months of ``dates`` (written with the link cubes), learned from
+    ``placed`` for a month without a marks file (not yet derived)."""
+    from .data import months_of
+    from .linkcube import rel
+    months = months_of(dates)
+    got = data.read_many([rel(m, "marks") for m in months])
+    parts = [f.filter(pl.col("line") == line) for f in got if f is not None and f.height]
+    missing = [m for m, f in zip(months, got) if f is None]
+    if missing:
+        sub = placed.filter(pl.col("service_date").dt.strftime("%Y-%m").is_in(missing))
+        parts.append(stopzones.marks(sub, line))
+    return pl.concat(parts, how="vertical_relaxed").unique() if parts else pl.DataFrame(schema=stopzones.MARKS_SCHEMA)
 
 
 def _segments(ld: Loaded, q) -> pl.DataFrame:
     from microsegments.segments import segment
     uids = sorted(set(ld.placed["pattern_uid"].drop_nulls().unique().to_list())
                   | set(ld.net.pattern_days.filter(pl.col("is_main"))["pattern_uid"].unique().to_list()))
-    return segment(ld.net, q.seg, q.phase, q.grid, q.stopzone, patterns=uids,
-                   zones=ld.zones if q.grid == "stops" else None)
+    if q.grid == "stops":   # the zones follow the feed: APPROACH_M before, the learned exit mark after
+        return segment(ld.net, q.seg, q.phase, "stops", (stopzones.APPROACH_M, stopzones.default_head()),
+                       patterns=uids, zones=ld.zones)
+    return segment(ld.net, q.seg, q.phase, q.grid, q.stopzone, patterns=uids)
 
 
 def _params(q):
     from microsegments.config import Params
-    return Params(segment_m=q.seg, phase_m=q.phase, grid=q.grid, stop_zone=q.stopzone, reference_hours=q.ref)
+    sz = (stopzones.APPROACH_M, stopzones.default_head()) if q.grid == "stops" else q.stopzone
+    return Params(segment_m=q.seg, phase_m=q.phase, grid=q.grid, stop_zone=sz, reference_hours=q.ref,
+                  tick_from_coverage=True)
 
 
 def _analyse(cube, ld: Loaded, segs, q, first: dt.date, last: dt.date, dates: list[dt.date]):
