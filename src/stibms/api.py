@@ -257,7 +257,14 @@ def _gz_response(request: Request, gz: bytes, cc: str, media="application/json",
 
 # Bump when the JSON a result holds changes without the data changing (page options such as
 # show_hotspots, contract fields): older bucket results are then ignored instead of served.
-RESULT_REV = 4
+RESULT_REV = 5
+
+
+def rev() -> str:
+    """Release token added to the pages' API calls (``rev=``, ignored by the API): a new release (package
+    or RESULT_REV) changes every URL, so browsers do not reuse responses cached under an older one."""
+    from . import ms
+    return f"{ms.version()}-{RESULT_REV}"
 
 
 def _cached_json(kind: str, q, compute, request: Request) -> Response:
@@ -596,7 +603,8 @@ def ranking(request: Request, from_: str | None = Q(None, alias="from"), to: str
 @app.get("/comparer", include_in_schema=False)
 @app.get("/classement", include_in_schema=False)
 def index():
-    return FileResponse(STATIC / "index.html", headers={"Cache-Control": SHORT_CACHE})
+    html = (STATIC / "index.html").read_text().replace("__REV__", rev())
+    return Response(html, media_type="text/html; charset=utf-8", headers={"Cache-Control": SHORT_CACHE})
 
 
 @app.get("/methode", include_in_schema=False)
@@ -610,7 +618,8 @@ _LOADER = """<script>
   var main = document.getElementById("ms-main");
   var q = new URLSearchParams(location.search);
   var api = (q.get("a") && q.get("b")) ? "/api/compare" : "/api/analysis";
-  fetch(api + location.search).then(function (r) {
+  // "rev" (code version) is not a parameter: it only keeps browsers from reusing a response of an older release
+  fetch(api + location.search + (location.search ? "&" : "?") + "rev=__REV__").then(function (r) {
     // error bodies: FastAPI JSON (detail: a string, or a list of {msg}) or a proxy's HTML / text
     if (!r.ok) return r.text().then(function (t) {
       var m = r.status + " " + r.statusText;
@@ -666,13 +675,14 @@ def _template() -> str | None:
     html = (html[:m.start()] + '<script id="ms-data" type="application/json"></script>\n'
             + '<script type="text/plain" id="ms-main">' + html[a:b] + "</script>" + html[m.end():])
     i = html.rfind("</body>")
-    return html[:i] + _LOADER + html[i:] if i >= 0 else html + _LOADER
+    loader = _LOADER.replace("__REV__", rev())
+    return html[:i] + loader + html[i:] if i >= 0 else html + loader
 
 
 @app.api_route("/view", methods=["GET", "HEAD"], include_in_schema=False)
 def view():
     from . import ms
-    key = f"template-{ms.version()}"      # a new package version renders a new page
+    key = f"template-{rev()}"             # a new release renders a new page
     html = state.blobs.get(key)
     if html is None:
         html = _template()

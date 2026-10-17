@@ -275,8 +275,10 @@ const fmonth = m => { const [y, mm] = m.split("-"); return `${MONTHS[+mm - 1]} $
 const nf = (v, d = 0) => v == null ? "–" : (+v).toLocaleString("fr-BE", {minimumFractionDigits: d, maximumFractionDigits: d});
 const monthEnd = m => { const [y, mm] = m.split("-").map(Number); return iso(new Date(Date.UTC(y, mm, 0, 12))); };
 
+// REV: the release (set by the server); in every API URL so a new release never reads an older cached response
+const REV = "__REV__";
 async function getJSON(url) {
-  const r = await fetch(url);
+  const r = await fetch(url + (url.includes("?") ? "&" : "?") + "rev=" + REV);
   let body = null;
   try { body = await r.json(); } catch (e) { /* not JSON */ }
   if (!r.ok && r.status !== 202) throw new Error((body && body.detail) || r.statusText || ("HTTP " + r.status));
@@ -533,7 +535,7 @@ async function runLine() {
 }
 function showFrame(p, me, elapsed) {
   return new Promise(resolve => {
-    $("view").innerHTML = `<iframe src="/view?${p}" scrolling="no" allowfullscreen title="Analyse de la ligne ${esc(p.get("line"))}"></iframe>`;
+    $("view").innerHTML = `<iframe src="/view?${p}&rev=${REV}" scrolling="no" allowfullscreen title="Analyse de la ligne ${esc(p.get("line"))}"></iframe>`;
     const fr = $("view").querySelector("iframe");
     FRAME = fr;
     let settled = false;
