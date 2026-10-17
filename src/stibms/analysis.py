@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 import polars as pl
 
 from . import holidays as hol
-from . import ms
+from . import ms, stopzones
 from .data import ALGO_VERSION, Data, date_range
 
 SOURCE = "STIB vehicle-distance et punctuality via MobilityTwin.Brussels"
@@ -33,8 +33,8 @@ class Query:
     holidays: str = "exclude"            # "exclude" | "include"
     seg: float = 30.0
     phase: float = 0.0
-    grid: str = "equal"                  # "equal" | "fixed"
-    stopzone: tuple[float, float] = (30.0, 60.0)
+    grid: str = "stops"                  # "stops" (zones from the feed, see stibms.stopzones) | "equal" | "fixed"
+    stopzone: tuple[float, float] = (36.0, 38.0)   # before / after a stop; "stops": after = default exit mark
     ref: tuple[int, int] = (20, 23)
     hours: tuple[int, int] = (5, 24)
     B: int = 200                         # hotspot bootstrap draws
@@ -46,8 +46,8 @@ class Query:
             raise ValueError("period longer than 400 days")
         if not 5 <= self.seg <= 500:
             raise ValueError("seg must be within 5..500 m")
-        if self.grid not in ("equal", "fixed"):
-            raise ValueError("grid must be equal or fixed")
+        if self.grid not in ("stops", "equal", "fixed"):
+            raise ValueError("grid must be stops, equal or fixed")
         if self.holidays not in ("exclude", "include"):
             raise ValueError("holidays must be exclude or include")
         if not self.dow or any(d not in range(7) for d in self.dow):
@@ -78,6 +78,7 @@ class Run:
     placed: pl.DataFrame
     passages: pl.DataFrame | None
     timings: dict = field(default_factory=dict)
+    zones: pl.DataFrame | None = None
     _hotspots: pl.DataFrame | None = None
     mode: str | None = None
 
@@ -145,6 +146,7 @@ class Loaded:
     coverage: pl.DataFrame
     net: object
     timings: dict = field(default_factory=dict)
+    zones: pl.DataFrame | None = None    # per-link exit marks (stibms.stopzones.exit_marks)
 
 
 def not_derived_months(data: Data, dates) -> list[str]:
@@ -166,14 +168,17 @@ def load(data: Data, line: str, dates: list[dt.date], label: str = "cette pério
     passages = data.passages(line, dates)
     cov = with_line_absence(data.coverage(dates), placed, dates)
     net = data.network(line, dates)
-    return Loaded(dates, placed, passages, cov, net, {"load": round(time.time() - t, 3)})
+    placed = stopzones.prepare(placed, net)
+    return Loaded(dates, placed, passages, cov, net, {"load": round(time.time() - t, 3)},
+                  zones=stopzones.exit_marks(placed))
 
 
 def _segments(ld: Loaded, q) -> pl.DataFrame:
     from microsegments.segments import segment
     uids = sorted(set(ld.placed["pattern_uid"].drop_nulls().unique().to_list())
                   | set(ld.net.pattern_days.filter(pl.col("is_main"))["pattern_uid"].unique().to_list()))
-    return segment(ld.net, q.seg, q.phase, q.grid, q.stopzone, patterns=uids)
+    return segment(ld.net, q.seg, q.phase, q.grid, q.stopzone, patterns=uids,
+                   zones=ld.zones if q.grid == "stops" else None)
 
 
 def _params(q):
@@ -210,7 +215,7 @@ def run(data: Data, q: Query, with_mode: bool = True) -> Run:
     an, hd = _analyse(cube, ld, segs, q, dates[0], dates[-1], dates)
     tm["analyse"] = round(time.time() - t, 3)
     return Run(query=q, dates=dates, holidays=hd, net=ld.net, segments=segs, analysis=an, coverage=ld.coverage,
-               placed=ld.placed, passages=ld.passages, timings=tm,
+               placed=ld.placed, passages=ld.passages, timings=tm, zones=ld.zones,
                mode=route_mode(data, q.line, dates) if with_mode else None)
 
 
@@ -259,8 +264,8 @@ class CompareQuery:
     holidays: str = "exclude"
     seg: float = 30.0
     phase: float = 0.0
-    grid: str = "equal"
-    stopzone: tuple[float, float] = (30.0, 60.0)
+    grid: str = "stops"
+    stopzone: tuple[float, float] = (36.0, 38.0)
     ref: tuple[int, int] = (20, 23)
     hours: tuple[int, int] = (5, 24)
     B: int = 100                         # bootstrap draws (difference CI and period-B hotspots)

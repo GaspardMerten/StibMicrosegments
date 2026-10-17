@@ -6,8 +6,8 @@
 
 - ``cube.parquet``: per (line, service_date, link_key) the observations and passages of the line's
   vehicles in four hour bands (day 6-21 h, evening 20-23 h = the reference, am 7-10 h, pm 16-19 h),
-  observations split by zone (``_r`` running = between stops, ``_s`` stop zone = 30 m before to 60 m
-  after a stop, the page's default stop zone) and, for day and evening, the observations that belong
+  observations split by zone (``_r`` running = between stops, ``_s`` stop zone = from where the feed
+  switches to the stop to its exit mark, as on the line page, see ``stibms.stopzones``) and, for day and evening, the observations that belong
   to a long stand (``l_``: the vehicle did not move for >= ``LONG_STAND_S``). Only usable hours are
   summed (feed coverage >= 80 %, not frozen, the line present in the feed) and only usable days are
   written (at most a quarter of the 6-21 h hours dropped), as in the line analysis.
@@ -34,6 +34,7 @@ import time
 
 import polars as pl
 
+from . import stopzones
 from .data import Data, derived
 
 log = logging.getLogger("stibms.linkcube")
@@ -41,7 +42,6 @@ log = logging.getLogger("stibms.linkcube")
 STAND_MOVE_M = 8.0
 STAND_GAP_S = 90
 LONG_STAND_S = 180
-STOP_ZONE = (30.0, 60.0)       # metres before / after a stop
 BANDS = {"day": (6, 21), "eve": (20, 23), "am": (7, 10), "pm": (16, 19)}
 LONG_BANDS = ("day", "eve")
 DAY_HOURS = (6, 21)
@@ -90,11 +90,15 @@ def line_cube(line: str, placed: pl.DataFrame, passages: pl.DataFrame | None, ne
     if not placed.height or not lk.height or not days:
         return pl.DataFrame(), days_df, pl.DataFrame()
     p = placed.filter(pl.col("count").fill_null(True)) if "count" in placed.columns else placed
+    p = stopzones.prepare(p, net)
+    marks = stopzones.exit_marks(p)
     p = stands(p)
-    p = p.join(lk.select("pattern_uid", "link_idx", pl.col("len_m").alias("_len")), on=["pattern_uid", "link_idx"],
-               how="left")
-    before, after = STOP_ZONE
-    p = p.with_columns(((pl.col("pos_m") <= after) | (pl.col("pos_m") > pl.col("_len") - before))
+    p = (p.join(lk.select("pattern_uid", "link_idx", pl.col("len_m").alias("_len")), on=["pattern_uid", "link_idx"],
+                how="left")
+         .join(marks, on=["pattern_uid", "link_key"], how="left")
+         .join(marks.group_by("link_key").agg(pl.col("head_m").median().alias("_hk")), on="link_key", how="left"))
+    head = pl.coalesce("head_m", "_hk", pl.lit(stopzones.EXIT_DEFAULT_M))
+    p = p.with_columns(((pl.col("pos_m") <= head) | (pl.col("pos_m") > pl.col("_len") - stopzones.APPROACH_M))
                        .fill_null(False).alias("stop"), pl.col("hour").cast(pl.Int8))
     p = p.join(ok, on=["service_date", "hour"], how="inner")
     aggs = []

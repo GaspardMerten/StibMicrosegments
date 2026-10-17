@@ -11,8 +11,8 @@ and link, observations and passages of the usable hours, by hour band and zone. 
 
 which equals the line page's sum over the link's 30 m segments of excess x passages (same ratios of
 sums). By default only the observations between stops count (``stops=False``): dwell growth at
-stops is passenger load, not traffic; ``stops=True`` adds the stop zones (30 m before to 60 m after a
-stop). Lines on the same stop pair and track share a ``link_key`` and add up; platforms of the same
+stops is passenger load, not traffic; ``stops=True`` adds the stop zones (from ~36 m before a stop
+to its exit mark, see ``stibms.stopzones``). Lines on the same stop pair and track share a ``link_key`` and add up; platforms of the same
 stops (same names, tracks overlapping >= 80 % within 30 m) are merged into one stretch.
 
 Regulation and termini (left out unless ``terminus=True``, listed with their reason):

@@ -8,8 +8,8 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
     GET /api/lines?date=                      lines of the GTFS in force on date (default: latest)
     GET /api/coverage?line&from&to            per day feed coverage, line observations, holiday, status
     GET /api/versions?line&from&to            GTFS versions (main pattern runs) per direction
-    GET /api/analysis[.csv|.parquet]?line&from&to&dow&holidays=exclude&seg=30&phase=0&grid=equal
-                                       &stopzone=30,60&ref=20-23
+    GET /api/analysis[.csv|.parquet]?line&from&to&dow&holidays=exclude&seg=30&phase=0&grid=stops
+                                       &stopzone=36,38&ref=20-23
                                               JSON contract (microsegments.contract) / result table
     GET /api/hotspots[.csv|.parquet]?...      hotspot stretches (same parameters)
     GET /api/tune?...&lengths=15,20,30,40,50  segment-length criteria (slow, cached)
@@ -221,7 +221,7 @@ def period(line: str = Q(..., description="line number (GTFS route_short_name)")
 
 def query(line: str = Q(...), from_: str = Q(..., alias="from"), to: str = Q(...),
           dow: str = Q("0-4"), holidays: str = Q("exclude"), seg: float = Q(30.0),
-          phase: float = Q(0.0), grid: str = Q("equal"), stopzone: str = Q("30,60"), ref: str = Q("20-23")):
+          phase: float = Q(0.0), grid: str = Q("stops"), stopzone: str = Q("36,38"), ref: str = Q("20-23")):
     from .analysis import Query
     ln, a, b = period(line, from_, to)
     try:
@@ -257,7 +257,7 @@ def _gz_response(request: Request, gz: bytes, cc: str, media="application/json",
 
 # Bump when the JSON a result holds changes without the data changing (page options such as
 # show_hotspots, contract fields): older bucket results are then ignored instead of served.
-RESULT_REV = 3
+RESULT_REV = 4
 
 
 def _cached_json(kind: str, q, compute, request: Request) -> Response:
@@ -480,7 +480,8 @@ def tune(request: Request, q=Depends(query), lengths: str = Q("15,20,30,40,50,75
         net, uids = r.net, sorted(r.segments["pattern_uid"].unique().to_list())
 
         def seg_fn(L, phase=0.0, stop_zone=q.stopzone):
-            return segment(net, L, phase, q.grid, stop_zone, patterns=uids, geometry=False)
+            return segment(net, L, phase, q.grid, stop_zone, patterns=uids, geometry=False,
+                           zones=r.zones if q.grid == "stops" else None)
         an = r.analysis
         res = segment_length(r.placed, seg_fn, Ls, coverage=r.coverage if r.coverage.height else None,
                              passages=r.passages, pattern_days=net.pattern_days, select=an.select,
@@ -502,7 +503,7 @@ def _range(s: str, name: str) -> tuple[dt.date, dt.date]:
 
 def compare_query(line: str = Q(...), a: str = Q(..., description="period A (before), YYYY-MM-DD..YYYY-MM-DD"),
                   b: str = Q(..., description="period B (after)"), dow: str = Q("0-4"), holidays: str = Q("exclude"),
-                  seg: float = Q(30.0), phase: float = Q(0.0), grid: str = Q("equal"), stopzone: str = Q("30,60"),
+                  seg: float = Q(30.0), phase: float = Q(0.0), grid: str = Q("stops"), stopzone: str = Q("36,38"),
                   ref: str = Q("20-23")):
     from .analysis import CompareQuery
     try:
