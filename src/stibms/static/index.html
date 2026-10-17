@@ -731,26 +731,28 @@ $("notes").addEventListener("click", e => {
 // stops it drops or adds, or, with the reference's stops, its detours and moved stops (``detours``: a link
 // longer or shorter by hundreds of metres); its button adds its periods to the excluded periods.
 let ROUTES = null, RGROUPS = [];
-// "6 juin 2026", "du 6 au 28 juin 2026 (15 jours)", "du 30 mai au 2 juin 2026 (4 jours)"
+// "le 6 juin 2026", "du 6 au 28 juin 2026 (15 jours)", "du 30 mai au 2 juin 2026 (4 jours)"
 function fper(p) {
-  if (p.first === p.last) return fday(p.first, true);
+  if (p.first === p.last) return `le ${fday(p.first, true)}`;
   const [a, b] = [p.first, p.last], dn = s => { const d = +s.slice(8, 10); return d === 1 ? "1er" : String(d); };
   const from = a.slice(0, 7) === b.slice(0, 7) ? dn(a) : fday(a, a.slice(0, 4) !== b.slice(0, 4));
   return `du ${from} au ${fday(b, true)} (${p.n_days} jour${p.n_days > 1 ? "s" : ""})`;
 }
-function changeTxt(x) {
-  const list = a => a.length > 3 ? `${a.slice(0, 3).map(esc).join(", ")} et ${a.length - 3} autre${a.length > 4 ? "s" : ""}` : andList(a.map(esc));
-  const n = (k, w) => `${k} arrêt${k > 1 ? "s" : ""} ${w}`;
+// one sentence for both directions: "Da Vinci, Bordet Station et Paix non desservis ; Helmet desservi en plus ;
+// détour entre X et Y (+415 m)" (stop names merged over the directions, at most 5 then "et N autres")
+function changeTxt(xs) {
+  const uniq = a => [...new Set(a)];
+  const list = a => a.length > 5 ? `${a.slice(0, 5).map(esc).join(", ")} et ${a.length - 5} autre${a.length > 6 ? "s" : ""}` : andList(a.map(esc));
+  const rm = uniq(xs.flatMap(x => x.removed || [])), ad = uniq(xs.flatMap(x => x.added || []));
   const out = [];
-  if (x.removed.length) out.push(`${n(x.removed.length, "en moins")} : ${list(x.removed)}`);
-  if (x.added.length) out.push(`${x.removed.length ? `${x.added.length} en plus` : n(x.added.length, "en plus")} : ${list(x.added)}`);
+  if (rm.length) out.push(`${list(rm)} non desservi${rm.length > 1 ? "s" : ""}`);
+  if (ad.length) out.push(`${list(ad)} desservi${ad.length > 1 ? "s" : ""} en plus`);
   const m = v => `${v > 0 ? "+" : "−"}${nf(Math.abs(v))} m`;
-  for (const t of x.detours || []) out.push(t.kind === "moved_stop"
-    ? `arrêt ${esc(t.stop)} déplacé (${nf(t.delta_m)} m)`
-    : `détour entre ${esc(t.from)} et ${esc(t.to)} (${m(t.delta_m)})`);
-  const s = out.join(" ; ");
-  return s.charAt(0).toUpperCase() + s.slice(1);
+  out.push(...uniq(xs.flatMap(x => (x.detours || []).map(t => t.kind === "moved_stop"
+    ? `arrêt ${esc(t.stop)} déplacé (${nf(t.delta_m)} m)` : `détour entre ${esc(t.from)} et ${esc(t.to)} (${m(t.delta_m)})`))));
+  return out.join(" ; ");
 }
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 const ROUTE_MIN_DAYS = 5;
 function drawRoutes() {
   const v = ROUTES || [];
@@ -761,28 +763,18 @@ function drawRoutes() {
   // a reference route that already ran at the start may come from a lasting change made before the period
   const lasting = v.filter(x => x.ref && x.lasting);
   if (!changed.length && !lasting.length) { $("routes").innerHTML = ""; return; }
-  const ndir = new Set(v.map(x => x.direction_id)).size;
-  const refs = v.filter(x => x.ref);
-  const refTo = d => { const r = refs.find(x => x.direction_id === d); return r ? r.stops[r.stops.length - 1] : ""; };
   // directions changed on the same days share a line
   const g = new Map();
   for (const x of changed) { const k = x.periods.map(p => p.first + ".." + p.last).join(","); if (!g.has(k)) g.set(k, []); g.get(k).push(x); }
   RGROUPS = [...g.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([, xs]) => ({periods: xs[0].periods, xs}));
   const lg = new Map();
   for (const x of lasting) { const k = x.lasting.since; if (!lg.has(k)) lg.set(k, []); lg.get(k).push(x); }
-  const before = [...lg.entries()].map(([since, xs]) => {
-    const what = xs.map(x => {
-      const b = x.lasting.before;
-      return (ndir > 1 ? `vers ${esc(refTo(x.direction_id))} : ` : "") + changeTxt({removed: x.lasting.removed, added: x.lasting.added})
-        + ` (avant : ${esc(b.stops[0])} → ${esc(b.stops[b.stops.length - 1])}, jusqu’au ${fday(b.last, true)})`;
-    }).join(" · ");
-    return `<li><span><b>Depuis le ${fday(since, true)}</b>, avant la période et toujours en vigueur · ${what}</span></li>`;
-  }).join("");
-  $("routes").innerHTML = `<div class="routes"><b>Changements de tracé sur la période</b><ul>${before}${RGROUPS.map((gr, i) => {
+  const before = [...lg.entries()].map(([since, xs]) =>
+    `<li><span><b>Depuis le ${fday(since, true)}</b> : ${changeTxt(xs.map(x => x.lasting))}</span></li>`).join("");
+  $("routes").innerHTML = `<div class="routes"><b>Changements de tracé</b><ul>${before}${RGROUPS.map((gr, i) => {
     const ex = gr.periods.every(p => XL.covers(p.first, p.last));
-    const what = gr.xs.map(x => (ndir > 1 ? `vers ${esc(refTo(x.direction_id))} : ` : "") + changeTxt(x)).join(" · ");
-    const when = andList(gr.periods.map(fper)), np = gr.periods.length;
-    return `<li><span><b>${when.charAt(0).toUpperCase() + when.slice(1)}</b> · ${what}</span><span class="acts"><button type="button" class="mini" data-excl="${i}"${ex ? " disabled" : ""}>${ex ? (np > 1 ? "Périodes exclues" : "Période exclue") : (np > 1 ? "Exclure ces périodes" : "Exclure cette période")}</button></span></li>`;
+    const np = gr.periods.length;
+    return `<li><span><b>${cap(andList(gr.periods.map(fper)))}</b> : ${changeTxt(gr.xs)}</span><span class="acts"><button type="button" class="mini" data-excl="${i}"${ex ? " disabled" : ""}>${ex ? (np > 1 ? "Périodes exclues" : "Période exclue") : (np > 1 ? "Exclure ces périodes" : "Exclure cette période")}</button></span></li>`;
   }).join("")}</ul></div>`;
 }
 $("routes").addEventListener("click", e => {
