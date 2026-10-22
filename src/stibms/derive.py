@@ -1,28 +1,33 @@
 """Raw -> derived, per month: networks per GTFS feed, feed coverage, placed observations and passages
 per line (layout in ``stibms.data``).
 
-    python -m stibms.derive --month 2025-03 [--lines all|55,71] [--bucket gs://b | --local DIR]
+    python -m stibms.derive --month 2025-03 [--lines all|55,71] [--full] [--bucket gs://b | --local DIR]
     python -m stibms.derive --from 2024-04 --to 2026-10 --coverage-only     # coverage files only
     python -m stibms.derive --from 2024-04 --to 2026-10 --linkcube-only     # ranking cubes only
     python -m stibms.derive --from 2024-04 --to 2026-10 --passages-events-only   # event passages + cubes
+    python -m stibms.derive --linenets-only        # per-line network copies (route changes) only
 
 Steps for a month M (dates = ingested service dates of M):
 
 1. **Patterns** per GTFS feed (sha) used in M, for all lines, on every ingested date that uses the
    feed (``derived/v{ALGO}/patterns/sha=<sha>/``). Link keys come from the persistent registry
    ``linkkeys.parquet``, so they stay stable across feeds and months. A feed is rebuilt only when
-   its date set grew (the nightly feed), and feeds are processed in date order.
+   its date set grew (the nightly feed), and feeds are processed in date order. The rebuilt feeds'
+   rows are copied per line (``linenets/``, read by the route changes, see ``stibms.linenets``).
 2. **Coverage** of the whole feed per date x hour (``coverage/month=M.parquet``).
 3. **Placed + passages** per line: the month's vehicle-distance rows of the line are located on the
    network of their date (``microsegments.locate.place``), then passages are counted from the tracks
    and the punctuality stop events (``microsegments.tracks.passages``). Feed lengths and terminus
-   aliases are learned over the whole month.
+   aliases are learned over the whole month. By default only the month's new service days are
+   placed and merged into its files, the month being placed in full again when its day count has
+   doubled, when it closes, after a package change or with ``--full`` (``stibms.increment``).
 4. **Link cube** of the month, all lines (``linkcube/month=M/``, see ``stibms.linkcube``): what the
    network ranking sums for any window, so the API never runs the per-line analyses for it.
 
 Segment length, phase and stop zone are not fixed here: the API segments on request.
-Re-running a month rewrites its files (idempotent). Run months one at a time: the link-key registry
-is read at the start and written at the end, so two concurrent runs would race on it.
+Re-running an up-to-date month does nothing; ``--full`` rewrites its files (idempotent). Run months
+one at a time: the link-key registry is read at the start and written at the end, so two concurrent
+runs would race on it.
 """
 from __future__ import annotations
 
@@ -39,16 +44,13 @@ from pathlib import Path
 
 import polars as pl
 
-from . import ms
+from . import increment, linenets, ms
 from .data import ALGO_VERSION, PLACED_COLS, Data, by_line, derived, month_key, months_between
+from .increment import now as _now
 from .servicedays import parse_date
 
 __all__ = ["ALGO_VERSION", "derive_month", "main"]
 log = logging.getLogger("stibms.derive")
-
-
-def _now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------------- patterns
@@ -82,8 +84,10 @@ def _feed_networks(data: Data, sha: str, dates: list[dt.date], registry) -> tupl
     return out, lines, failed
 
 
-def ensure_patterns(data: Data, shas: list[str], registry, force: bool = False) -> dict:
-    """(Re)build the per-feed network tables of ``shas`` (all lines). Returns timing / counts."""
+def ensure_patterns(data: Data, shas: list[str], registry, force: bool = False,
+                    rebuilt: list[str] | None = None) -> dict:
+    """(Re)build the per-feed network tables of ``shas`` (all lines), the rebuilt shas appended to
+    ``rebuilt``. Returns timing / counts."""
     g = data.gtfs_index().group_by("sha").agg(pl.col("service_date").min())
     first = dict(zip(g["sha"].to_list(), g["service_date"].to_list()))
     report = {}
@@ -93,6 +97,7 @@ def ensure_patterns(data: Data, shas: list[str], registry, force: bool = False) 
         if not force and _patterns_current(data, base, dates):
             continue
         t0 = time.time()
+        linenets.forget(data, sha)    # its per-line copies are stale until linenets.update
         out, lines, failed = _feed_networks(data, sha, dates, registry)
         for n, frames in out.items():
             df = pl.concat(frames, how="vertical_relaxed") if frames else pl.DataFrame()
@@ -103,6 +108,8 @@ def ensure_patterns(data: Data, shas: list[str], registry, force: bool = False) 
             "sha": sha, "dates": [d.isoformat() for d in dates], "lines": len(lines), "failed": failed,
             "algo": ALGO_VERSION, "microsegments": ms.version(), "written_at": _now(),
             "seconds": round(time.time() - t0, 1)})
+        if rebuilt is not None:
+            rebuilt.append(sha)
         report[sha[:12]] = {"dates": len(dates), "lines": len(lines), "failed": len(failed),
                             "seconds": round(time.time() - t0, 1)}
         log.info("patterns %s: %d dates, %d lines (%d failed), %.1f s", sha[:12], len(dates), len(lines),
@@ -156,18 +163,33 @@ def split_by_line(data: Data, dates: list[dt.date], tmp: Path, lines: set[str] |
     return seen
 
 
-def derive_line(data: Data, month: str, line: str, dates: list[dt.date], tmp: Path, cfg) -> dict:
-    from microsegments.io.events import read_stib_punctuality
+def _place(data: Data, line: str, dates: list[dt.date], tmp: Path, cfg, prior: dict | None):
+    """(obs, net, placed) of the line's rows of ``dates``; with ``prior`` (incremental run: the month's
+    ``flen`` / ``aliases`` of its last full run) placed with what the month learned (``stibms.increment``)."""
     from microsegments.io.stib import compact_to_observations
-
-    t0 = time.time()
     files = sorted((tmp / "vd" / f"line={line}").glob("*.parquet"))
     obs = compact_to_observations(pl.scan_parquet(files), route_id=line,
                                   id_normaliser=cfg.input.linear.id_normaliser).collect()
     net = data.network(line, dates)
     if not net.patterns.height:
+        return obs, net, None
+    if prior is not None:
+        cfg = increment.with_aliases(cfg, prior.get("aliases"))
+        if prior.get("flen") is not None:
+            cfg = increment.with_feed_lengths(cfg, prior["flen"], ms.place(obs, net, cfg).flen)
+    return obs, net, ms.place(obs, net, cfg)
+
+
+def derive_line(data: Data, month: str, line: str, dates: list[dt.date], tmp: Path, cfg,
+                prior: dict | None = None) -> dict:
+    """Placed + passages of the line on ``dates``: the whole month, or with ``prior`` the new days,
+    merged into the month's files."""
+    from microsegments.io.events import read_stib_punctuality
+
+    t0 = time.time()
+    obs, net, placed = _place(data, line, dates, tmp, cfg, prior)
+    if placed is None:
         return {"line": line, "skipped": "no GTFS pattern"}
-    placed = ms.place(obs, net, cfg)
     frame = ms.placed_frame(placed)
     t_place = time.time() - t0
     pfiles = sorted((tmp / "p" / f"line={line}").glob("*.parquet"))
@@ -177,8 +199,15 @@ def derive_line(data: Data, month: str, line: str, dates: list[dt.date], tmp: Pa
     # passages are computed here from the full frame.
     keep = [c for c in PLACED_COLS if c in frame.columns]
     out = frame.filter(pl.col("count").fill_null(True)).select(keep).sort("ts")
-    data.store.write_parquet(derived(f"placed/line={line}/month={month}.parquet"), out)
-    data.store.write_parquet(derived(f"passages/line={line}/month={month}.parquet"), pas)
+    prel = derived(f"placed/line={line}/month={month}.parquet")
+    srel = derived(f"passages/line={line}/month={month}.parquet")
+    if prior is None:
+        data.store.write_parquet(increment.flen_rel(line, month), placed.flen)
+    else:
+        out = increment.merge(data.read_optional(prel), out, dates, ["ts"])
+        pas = increment.merge(data.read_optional(srel), pas, dates, ["service_date", "pattern_uid", "link_key", "hour"])
+    data.store.write_parquet(prel, out)
+    data.store.write_parquet(srel, pas)
     rep = getattr(placed, "report", {}) or {}
     return {"line": line, "rows": obs.height, "placed": out.height, "passages": pas.height,
             "report": {str(k): int(v) for k, v in rep.items()},
@@ -188,19 +217,32 @@ def derive_line(data: Data, month: str, line: str, dates: list[dt.date], tmp: Pa
 
 # ---------------------------------------------------------------------------------- month
 def _patterns_step(data: Data, dates: list[dt.date], force: bool) -> dict:
-    """Per-feed networks of the feeds ``dates`` use; new link keys go to the registry."""
+    """Per-feed networks of the feeds ``dates`` use; new link keys go to the registry, the rebuilt
+    feeds' rows to the per-line copies (``stibms.linenets``)."""
     registry = data.link_registry()
     n_keys = len(registry)
     shas = sorted({x for c in data.candidate_shas(dates).values() for x in c})
-    pat = ensure_patterns(data, shas, registry, force=force)
+    rebuilt: list[str] = []
+    pat = ensure_patterns(data, shas, registry, force=force, rebuilt=rebuilt)
     if len(registry) != n_keys:
         data.store.write_parquet(derived("linkkeys.parquet"), registry.table)
+    if rebuilt:
+        linenets.update(data, rebuilt)
     data.invalidate()  # per-feed tables may have been rewritten
     return pat
 
 
-def _lines_step(data: Data, month: str, dates: list[dt.date], lines: list[str] | None) -> tuple[list, dict, float]:
-    """(per-line reports, failed lines, split seconds): placed + passages of every line of the month."""
+def _prior(data: Data, month: str, line: str, prev: dict | None) -> dict | None:
+    """What the month's last full run learned for the line (incremental runs only, see ``increment``)."""
+    if prev is None:
+        return None
+    return {"flen": data.read_optional(increment.flen_rel(line, month)), "aliases": prev.get("aliases", {}).get(line)}
+
+
+def _lines_step(data: Data, month: str, dates: list[dt.date], lines: list[str] | None,
+                prev: dict | None = None) -> tuple[list, dict, float]:
+    """(per-line reports, failed lines, split seconds): placed + passages of every line on ``dates``
+    (the month; with ``prev``, the month's report, the new days merged into the month's files)."""
     cfg = ms.config()
     per_line, failed = [], {}
     tmp = Path(tempfile.mkdtemp(prefix=f"derive-{month}-"))
@@ -211,7 +253,7 @@ def _lines_step(data: Data, month: str, dates: list[dt.date], lines: list[str] |
         todo = sorted(seen, key=by_line) if not lines else [x for x in lines if x in seen]
         for line in todo:
             try:
-                r = derive_line(data, month, line, dates, tmp, cfg)
+                r = derive_line(data, month, line, dates, tmp, cfg, _prior(data, month, line, prev))
                 per_line.append(r)
                 log.info("%s line %s: %s", month, line, {k: r[k] for k in r if k not in ("report", "aliases")})
             except ms.PackageMissing:
@@ -224,36 +266,42 @@ def _lines_step(data: Data, month: str, dates: list[dt.date], lines: list[str] |
     return per_line, failed, t_split
 
 
-def derive_month(data: Data, month: str, lines: list[str] | None = None, force_patterns: bool = False) -> dict:
+def derive_month(data: Data, month: str, lines: list[str] | None = None, force_patterns: bool = False,
+                 full: bool = False) -> dict:
+    """Derive ``month``: in full, or only its new service days (``stibms.increment.plan``: the
+    nightly run); ``lines`` (a subset), ``full`` and ``force_patterns`` always run in full."""
     from . import linkcube
     t0 = time.time()
     dates = data.month_ingested(month)
     if not dates:
         log.warning("%s: no ingested date", month)
         return {"month": month, "dates": 0}
+    prev = _month_report(data, month)[1]
+    plan = increment.plan(data, month, dates, prev, full=full or force_patterns or lines is not None)
+    log.info("%s: %s (%s)", month, plan["mode"], plan["why"])
+    if plan["mode"] == "current":
+        return {"month": month, "lines": 0, "failed": {}, "mode": "current", "seconds": 0.0}
     pat = _patterns_step(data, dates, force_patterns)
     t_pat = time.time() - t0
     t1 = time.time()
     write_coverage(data, month, dates)
     t_cov = time.time() - t1
-    per_line, failed, t_split = _lines_step(data, month, dates, lines)
+    inc = prev if plan["mode"] == "incremental" else None
+    per_line, failed, t_split = _lines_step(data, month, plan["days"], lines, inc)
     t3 = time.time()
     data.invalidate()
     cube = linkcube.write_month(data, month, lines)
     t_cube = time.time() - t3
-    report = {
-        "month": month, "algo": ALGO_VERSION, "microsegments": ms.version(),
-        "dates": [d.isoformat() for d in dates], "lines": len(per_line), "failed": failed,
+    report = increment.report(month, dates, plan, prev, per_line, failed, partial=lines is not None)
+    report.update({
         "seconds": {"patterns": round(t_pat, 1), "coverage": round(t_cov, 1), "split": round(t_split, 1),
                     "lines": round(sum(r.get("seconds", 0) for r in per_line), 1), "linkcube": round(t_cube, 1),
                     "total": round(time.time() - t0, 1)},
-        "patterns": pat, "per_line": per_line, "linkcube": {k: cube[k] for k in ("rows", "failed")},
-        "written_at": _now(),
-    }
+        "patterns": pat, "linkcube": {k: cube[k] for k in ("rows", "failed")}, "written_at": _now()})
     data.store.write_json(derived(f"_SUCCESS/month={month}.json"), report)
     data.invalidate()
-    log.info("%s: %d dates, %d lines, %d failed, %s", month, len(dates), len(per_line), len(failed),
-             report["seconds"])
+    log.info("%s: %s, %d dates (%d placed), %d lines, %d failed, %s", month, plan["mode"], len(dates),
+             len(plan["days"]), len(per_line), len(failed), report["seconds"])
     return report
 
 
@@ -358,6 +406,16 @@ def rewrite_passages(data: Data, month: str, lines: list[str] | None = None) -> 
     return {"month": month, "lines": done, "failed": {**failed, **cube["failed"]}, "seconds": round(time.time() - t0, 1)}
 
 
+def _months(args) -> list[str]:
+    if args.first:
+        a = dt.date.fromisoformat(args.first + "-01")
+        b = dt.date.fromisoformat((args.to or args.first) + "-01")
+        return months_between(a, b)
+    if args.month in (None, "current"):
+        return [month_key(parse_date("yesterday"))]
+    return [args.month]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m stibms.derive", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -369,6 +427,10 @@ def main(argv: list[str] | None = None) -> int:
     where.add_argument("--bucket", help="gs://bucket[/prefix] (default $MS_BUCKET)")
     where.add_argument("--local", help="local directory instead of GCS")
     ap.add_argument("--force-patterns", action="store_true", help="rebuild the per-feed networks")
+    ap.add_argument("--full", action="store_true",
+                    help="place every day of the months (default: only the new days, see stibms.increment)")
+    ap.add_argument("--linenets-only", action="store_true",
+                    help="only rebuild the per-line network copies of the route changes (all built feeds; no months)")
     ap.add_argument("--coverage-only", action="store_true",
                     help="only recompute the coverage files of the months (fast; e.g. after a package change)")
     ap.add_argument("--linkcube-only", action="store_true",
@@ -380,16 +442,12 @@ def main(argv: list[str] | None = None) -> int:
     root = args.local or args.bucket or os.environ.get("MS_BUCKET")
     if not root:
         ap.error("give --bucket, --local or set MS_BUCKET")
-    if args.first:
-        a = dt.date.fromisoformat(args.first + "-01")
-        b = dt.date.fromisoformat((args.to or args.first) + "-01")
-        months = months_between(a, b)
-    elif args.month in (None, "current"):
-        months = [month_key(parse_date("yesterday"))]
-    else:
-        months = [args.month]
+    months = _months(args)
     lines = None if args.lines == "all" else [x.strip() for x in args.lines.split(",") if x.strip()]
     data = Data(root)
+    if args.linenets_only:
+        print(json.dumps(linenets.rebuild(data)))
+        return 0
     for m in months:
         if args.coverage_only:
             rep = rewrite_coverage(data, m)
@@ -398,8 +456,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.passages_events_only:
             rep = rewrite_passages(data, m, lines)
         else:
-            rep = derive_month(data, m, lines, force_patterns=args.force_patterns)
-        print(json.dumps({k: rep.get(k) for k in ("month", "lines", "failed", "seconds")}, default=str))
+            rep = derive_month(data, m, lines, force_patterns=args.force_patterns, full=args.full)
+        print(json.dumps({k: rep.get(k) for k in ("month", "mode", "lines", "failed", "seconds")}, default=str))
         if rep.get("failed"):
             return 1
     return 0

@@ -101,8 +101,11 @@ resource "google_cloud_run_v2_job" "backfill" {
 # Derive (placed / passages / coverage per line-month) over a range of months, in one task: months
 # must run one after the other because they share the link-key registry. ~4-5 min per month for
 # all lines, so a full history (~31 months) takes ~2.5 h, hence the long timeout. The nightly
-# ingest re-derives the current month itself; this job is for backfills and ALGO_VERSION bumps:
-#   gcloud run jobs execute ms-derive --region europe-west1 --args=--from,2024-04,--to,2026-10
+# ingest derives the current month itself (only its new days, see stibms.increment); this job is
+# for backfills and ALGO_VERSION bumps (--full places every day again):
+#   gcloud run jobs execute ms-derive --region europe-west1 --args=--from,2024-04,--to,2026-10,--full
+# and for the per-line network copies of the route changes (stibms.linenets, all feeds, ~1 min):
+#   gcloud run jobs execute ms-derive --region europe-west1 --args=--linenets-only
 resource "google_cloud_run_v2_job" "derive" {
   name                = "ms-derive"
   location            = var.region

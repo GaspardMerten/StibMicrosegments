@@ -578,3 +578,81 @@ def test_monthly_count_is_whole_count(derived_root):
     segs = A._segments(ld, q)
     whole = count(A.placed(ld), segs, A._params(q).tick_s)
     assert A._count(ld, segs, q).equals(whole)
+
+
+def test_etag_and_304(client):
+    url = f"/api/analysis?{Q}"
+    gz = client.get(url, headers={"Accept-Encoding": "gzip"})
+    tag = gz.headers["etag"]
+    assert gz.status_code == 200 and tag.startswith('"') and tag.endswith('-gz"')
+    plain = client.get(url, headers={"Accept-Encoding": "identity"})
+    assert plain.headers["etag"] == tag.replace("-gz", "") and "content-encoding" not in plain.headers
+    nm = client.get(url, headers={"Accept-Encoding": "gzip", "If-None-Match": tag})
+    assert nm.status_code == 304 and not nm.content
+    assert nm.headers["etag"] == tag and nm.headers["cache-control"] == gz.headers["cache-control"]
+    assert client.get(url, headers={"If-None-Match": f'W/{plain.headers["etag"]}, "x"'}).status_code == 304
+    assert client.get(url + "&dow=0-6", headers={"If-None-Match": tag}).status_code == 200   # other params, other tag
+    rk = "/api/ranking?from=2025-05-26&to=2025-06-02&dow=0-6&top=10"
+    t = client.get(rk).headers["etag"]
+    assert client.get(rk, headers={"If-None-Match": t}).status_code == 304
+    ln = client.get("/api/lines")
+    assert ln.headers["etag"].startswith('W/"')
+    assert client.get("/api/lines", headers={"If-None-Match": ln.headers["etag"]}).status_code == 304
+
+
+def test_304_skips_the_result(client, monkeypatch):
+    from stibms.api import cache
+    tag = client.get(f"/api/coverage?{Q}").headers["etag"]
+    monkeypatch.setattr(cache, "load", lambda res: pytest.fail("a 304 must not load the result"))
+    assert client.get(f"/api/coverage?{Q}", headers={"If-None-Match": tag}).status_code == 304
+
+
+def test_ranking_bucket_cache_and_excluded_stretches(client, derived_root):
+    from stibms import api
+    q = "/api/ranking?from=2025-05-26&to=2025-06-02&dow=0-6&top=10"
+    res = client.get(q).json()
+    assert list((derived_root / "results").rglob(f"ranking-r{api.RESULT_REV}-*.json.gz"))
+    api.state.blobs.clear()
+    assert client.get(q).headers["x-cache"] == "bucket"
+    # an empty window (no metro) is not cached: its cubes may come later
+    assert client.get(q + "&mode=metro").headers["x-cache"] == "computed"
+    assert client.get(q + "&mode=metro").headers["x-cache"] == "computed"
+    # excluded.n counts stretches, as the page words it: the listed ones are among them
+    ex = res["excluded"]
+    assert ex["n"] >= len(ex["top"]) and (ex["n"] > 10 or ex["n"] == len(ex["top"]))
+
+
+def test_warm_fills_the_cache(client, derived_root, monkeypatch):
+    from stibms import api, warm
+    monkeypatch.setenv("MS_BUCKET", str(derived_root))
+    monkeypatch.setenv("MS_BLOB_CACHE", "128")
+    for p in (derived_root / "results").rglob("*-r*.json.gz"):
+        p.unlink()
+    api.state.reset()
+    assert warm.main(["--local", str(derived_root), "--workers", "2"]) == 0
+    d = next(x for x in client.get("/api/lines").json()["lines"] if x["line"] == "S1")["available"]["default"]
+    api.state.blobs.clear()
+    p = f"line=S1&from={d['from']}&to={d['to']}"
+    for url in (f"/api/coverage?{p}", f"/api/versions?{p}", f"/api/analysis?{p}&dow=0-4"):
+        r = client.get(url + "&rev=x")
+        assert r.status_code == 200 and r.headers["x-cache"] == "bucket", url
+    # the page's default ranking; an empty one (here: May has 4 weekdays, < MIN_DAYS) is never cached
+    r = client.get("/api/ranking?dow=0-4&mode=all&top=50&rev=x")
+    assert r.headers["x-cache"] == ("bucket" if r.json()["stretches"] else "computed")
+
+
+def test_overlap_cache_bounded():
+    from stibms import stretches
+    from stibms.data import SizedLRU
+    assert isinstance(stretches._ov_cache, SizedLRU) and stretches._ov_cache.max_bytes == stretches.OV_CACHE_N
+
+
+def test_page_scripts_are_modules(client):
+    import re
+    from stibms.api import rev
+    page = client.get("/").text
+    assert f'<script type="module" src="/static/main.js?rev={rev()}">' in page
+    for name in ("util", "excl", "lines", "quality", "lineview", "routes", "rank", "main"):
+        js = client.get(f"/static/{name}.js").text
+        specs = re.findall(r'from "([^"]+)"', js)
+        assert all(s.endswith(f".js?rev={rev()}") for s in specs), (name, specs)   # one instance per module

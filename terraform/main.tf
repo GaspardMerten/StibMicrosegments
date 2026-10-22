@@ -28,7 +28,7 @@ locals {
 
 # ---------------------------------------------------------------- data
 # Raw days (~9 MB each), GTFS feeds once per content sha, derived tables and the result cache.
-# No lifecycle rule: raw days are the archive the derived layers are rebuilt from.
+# Raw days are the archive the derived layers are rebuilt from; only the result cache expires (90 days).
 resource "google_storage_bucket" "data" {
   name                        = var.bucket
   location                    = var.region
@@ -39,6 +39,16 @@ resource "google_storage_bucket" "data" {
 
   versioning {
     enabled = false
+  }
+
+  lifecycle_rule {
+    condition {
+      age            = 90
+      matches_prefix = ["results/"]
+    }
+    action {
+      type = "Delete"
+    }
   }
 }
 

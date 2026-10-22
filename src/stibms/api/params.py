@@ -84,6 +84,14 @@ def build(cls, **kw):
         raise HTTPException(422, str(e))
 
 
+def call(dep, **kw):
+    """A query dependency called outside a request (``stibms.warm``): its declared defaults, overridden
+    by ``kw`` (python names: ``from_``), so a precomputed query is the one the API parses."""
+    import inspect
+    d = {n: getattr(p.default, "default", p.default) for n, p in inspect.signature(dep).parameters.items()}
+    return dep(**{**d, **kw})
+
+
 # ---------------------------------------------------------------------------------- dependencies
 def period(line: str = Q(..., description="line number (GTFS route_short_name)"),
            from_: str = Q(..., alias="from"), to: str = Q(...)):

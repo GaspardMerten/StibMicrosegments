@@ -48,7 +48,7 @@ from .stretches import merge_groups
 
 log = logging.getLogger("stibms.ranking")
 MODES = ("all", "tram", "bus", "metro")
-RANK_VERSION = 4      # bump when the ranking changes meaning (new cache keys)
+RANK_VERSION = 5      # bump when the ranking changes meaning (new cache keys); 5: excluded.n counts stretches
 DEFAULT_PTR = f"results/v{ALGO_VERSION}/ranking-default.json"
 DEFAULT_MONTHS = 1    # the default window: the last complete month (weekdays)
 MIN_DAYS = 5          # links seen on fewer usable days are left out (a short detour otherwise tops the list)
@@ -264,10 +264,11 @@ def _stretch_row(rank: int, r: dict, geo: dict, days_per_year: int) -> dict:
     }
 
 
-def _stretches(df: pl.DataFrame, n: int, geo: dict, days_per_year: int) -> tuple[list[dict], float]:
-    """The ``n`` costliest stretches of ``df`` (per line and link) and the time lost on all stretches in loss."""
+def _stretches(df: pl.DataFrame, n: int, geo: dict, days_per_year: int) -> tuple[list[dict], float, int]:
+    """The ``n`` costliest stretches of ``df`` (per line and link), the time lost on all stretches in
+    loss and their number."""
     if not df.height:
-        return [], 0.0
+        return [], 0.0, 0
     per_key = df.group_by("link_key").agg(pl.col("veh_s_day").sum(), pl.col("from_t").first(), pl.col("to_t").first())
     df = df.with_columns(pl.col("link_key").replace_strict(merge_groups(per_key, geo), default=None).alias("stretch"))
     g = (df.group_by("stretch")
@@ -276,10 +277,11 @@ def _stretches(df: pl.DataFrame, n: int, geo: dict, days_per_year: int) -> tuple
               pl.struct("line", "veh_s_day", "veh_s_day_run", "veh_s_day_stop", "passages_day", "peak", "n_days",
                         "reason", "reg_share").sort_by("veh_s_day", descending=True).alias("by_line"))
          .sort("veh_s_day", descending=True))
-    tot = float(g.filter(pl.col("veh_s_day") > 0)["veh_s_day"].sum())
+    loss = g.filter(pl.col("veh_s_day") > 0)
+    tot, n_loss = float(loss["veh_s_day"].sum()), loss.height
     names = df.select("link_key", "from_t", "to_t", "len_m").unique("link_key", keep="first")
     g = g.head(n).join(names, left_on="stretch", right_on="link_key", how="left").sort("veh_s_day", descending=True)
-    return [_stretch_row(i + 1, r, geo, days_per_year) for i, r in enumerate(g.iter_rows(named=True))], tot
+    return [_stretch_row(i + 1, r, geo, days_per_year) for i, r in enumerate(g.iter_rows(named=True))], tot, n_loss
 
 
 def assemble(data: Data, rq: RankQuery, s: pl.DataFrame, top: int, info: dict, n_lines: int, n_used: int) -> dict:
@@ -295,12 +297,13 @@ def assemble(data: Data, rq: RankQuery, s: pl.DataFrame, top: int, info: dict, n
     geo = _geometry(data, s["link_key"])
     kept = s if rq.terminus else s.filter(pl.col("reason").is_null())
     flagged = s.head(0) if rq.terminus else s.filter(pl.col("reason").is_not_null() & (pl.col("veh_s_day") > 0))
-    main, total = _stretches(kept, top, geo, days_per_year)
-    ex_top, ex_tot = _stretches(flagged, 10, geo, days_per_year)
+    main, total, _ = _stretches(kept, top, geo, days_per_year)
+    # the page says "N tronçons laissés de côté": stretches (lines and platforms merged), not (line, link) rows
+    ex_top, ex_tot, ex_n = _stretches(flagged, 10, geo, days_per_year)
     line_tot = (kept.group_by("line").agg(pl.col("veh_s_day").filter(pl.col("veh_s_day") > 0).sum())
                 .sort("veh_s_day", descending=True))
     return {**base, "stretches": main, "total_veh_h_day": round(total / 3600, 1),
-            "excluded": {"n": int(flagged.height), "veh_h_day": round(ex_tot / 3600, 1),
+            "excluded": {"n": ex_n, "veh_h_day": round(ex_tot / 3600, 1),
                          "top": [{k: x[k] for k in ("from", "to", "veh_h_day", "s_per_passage", "reasons", "lines")} for x in ex_top]},
             "lines": [{"line": ln, "veh_h_day": round(v / 3600, 2), **(info.get(ln) or {})} for ln, v in line_tot.iter_rows()]}
 
@@ -352,7 +355,7 @@ def _print(res: dict) -> None:
         print(f"{s['rank']:>3} {s['veh_h_day']:>6.2f} h/j {s['s_per_passage'] or 0:>6.1f} s/p  {s['from']} -> {s['to']}  "
               f"[{', '.join(x['line'] for x in s['lines'])}]{' ' + ','.join(s['reasons']) if s['reasons'] else ''}")
     ex = res.get("excluded") or {}
-    print(f"excluded: {ex.get('n')} links, {ex.get('veh_h_day')} h/day")
+    print(f"excluded: {ex.get('n')} stretches, {ex.get('veh_h_day')} h/day")
     for x in ex.get("top", []):
         print(f"    {x['veh_h_day']:>6.2f} h/j {x['s_per_passage'] or 0:>6.1f} s/p  {x['from']} -> {x['to']}  "
               f"[{', '.join(y['line'] for y in x['lines'])}] {','.join(x['reasons'])}")

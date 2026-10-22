@@ -3,7 +3,9 @@
 // ran); the reference is the one with the most stops. A change lists its periods and, per direction, the
 // stops it drops or adds, or, with the reference's stops, its detours and moved stops (``detours``: a link
 // longer or shorter by hundreds of metres); its button adds its periods to the excluded periods.
-"use strict";
+import {$, andList, cap, esc, fday, nf} from "./util.js?rev=__REV__";
+import {XL} from "./excl.js?rev=__REV__";
+
 let ROUTES = null, RGROUPS = [];
 // "le 6 juin 2026", "du 6 au 28 juin 2026 (15 jours)", "du 30 mai au 2 juin 2026 (4 jours)"
 function fper(p) {
@@ -27,6 +29,8 @@ function changeTxt(xs) {
   return out.join(" ; ");
 }
 const ROUTE_MIN_DAYS = 5;
+// the versions of /api/versions (null: none yet)
+export function showRoutes(v) { ROUTES = v; drawRoutes(); }
 function drawRoutes() {
   const v = ROUTES || [];
   // versions with the reference's stops are a change only with a detour or a moved stop (else: shape edits)
@@ -50,11 +54,12 @@ function drawRoutes() {
     return `<li><span><b>${cap(andList(gr.periods.map(fper)))}</b> : ${changeTxt(gr.xs)}</span><span class="acts"><button type="button" class="mini" data-excl="${i}"${ex ? " disabled" : ""}>${ex ? (np > 1 ? "Périodes exclues" : "Période exclue") : (np > 1 ? "Exclure ces périodes" : "Exclure cette période")}</button></span></li>`;
   }).join("")}</ul></div>`;
 }
-$("routes").addEventListener("click", e => {
-  const b = e.target.closest("button"); if (!b) return;
-  if (b.dataset.excl != null) {
-    const gr = RGROUPS[+b.dataset.excl];
-    for (const p of gr.periods) XL.add(p.first, p.last);
-    $("fmore").open = true; runLine();
-  }
-});
+// "Exclure cette période": adds the group's periods to the excluded periods; true when the line must rerun
+// (the listener is in lineview.js, which runs the line: no import cycle)
+export function excludeRoutes(target) {
+  const b = target.closest("button");
+  if (!b || b.dataset.excl == null) return false;
+  for (const p of RGROUPS[+b.dataset.excl].periods) XL.add(p.first, p.last);
+  $("fmore").open = true;
+  return true;
+}

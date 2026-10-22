@@ -1,5 +1,10 @@
 // ---------------------------------------------------------------- ranking
-"use strict";
+import {$, DOW, busy, done, dowGet, esc, fdate, getJSON, nf} from "./util.js?rev=__REV__";
+import {XR} from "./excl.js?rev=__REV__";
+import {badge, lineOf} from "./lines.js?rev=__REV__";
+import {REASONS} from "./quality.js?rev=__REV__";
+
+const L = window.L;     // Leaflet: a classic script in the page's head
 const RMODES = [["all", "Tous"], ["tram", "Tram"], ["bus", "Bus"], ["metro", "Métro"]];
 $("rmode").innerHTML = RMODES.map(([k, t]) => `<button type="button" data-mode="${k}" aria-pressed="${k === "all"}">${t}</button>`).join("");
 $("rmode").addEventListener("click", e => {
@@ -18,7 +23,7 @@ function rankParams() {
   return XR.params(p);
 }
 let RMAP = null, RLAYERS = [], RK = 0;
-async function runRank() {
+export async function runRank() {
   const p = rankParams();
   history.replaceState(null, "", "/classement?" + p);
   const me = ++RK;

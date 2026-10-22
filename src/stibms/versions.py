@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+from . import linenets
 from .data import Data, date_range
 
 # A version with the reference's stops differs by its track only. GTFS shape edits move a link by a
@@ -157,7 +158,10 @@ def _runs(net) -> list[dict]:
 def _line_runs(data: Data, line: str, dates: list[dt.date]) -> list[dict]:
     if not dates:
         return []
-    net = data.network(line, dates, geometry=False)    # stops and link lengths only
+    # stops and link lengths only: the line's own copy of the feed tables, else the per-feed files
+    net = linenets.network(data, line, dates)
+    if net is None:
+        net = data.network(line, dates, geometry=False)
     return _runs(net) if net.pattern_days.height else []
 
 

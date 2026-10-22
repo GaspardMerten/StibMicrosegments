@@ -1,8 +1,11 @@
 // ---------------------------------------------------------------- lines
-"use strict";
-const lineOf = id => LINES.find(l => l.line === id);
+import {$, MODE_FR, S, addDays, esc, monthEnd} from "./util.js?rev=__REV__";
+import {XL} from "./excl.js?rev=__REV__";
+import {runLine} from "./lineview.js?rev=__REV__";
+
+export const lineOf = id => S.lines.find(l => l.line === id);
 const modeKey = l => /^N/i.test(l.line) ? "night" : (l.mode === "metro" || l.mode === "tram" || l.mode === "bus" ? l.mode : "autre");
-function badge(l, cls = "lb") {
+export function badge(l, cls = "lb") {
   const bg = l && l.color ? "#" + l.color : "#555", fg = l && l.text_color ? "#" + l.text_color : "#fff";
   return `<span class="${cls}" style="background:${bg};color:${fg}">${esc(l ? l.line : "?")}</span>`;
 }
@@ -16,7 +19,7 @@ function niceName(n) {
 function drawPicker(filter = "") {
   const f = filter.trim().toLowerCase();
   const groups = {};
-  for (const l of LINES) {
+  for (const l of S.lines) {
     if (f && !(l.line.toLowerCase().startsWith(f) || (l.name || "").toLowerCase().includes(f))) continue;
     (groups[modeKey(l)] ||= []).push(l);
   }
@@ -27,32 +30,32 @@ function drawPicker(filter = "") {
         aria-disabled="${!l.available}" title="${esc(l.line + " · " + niceName(l.name) + (l.available ? "" : " (pas encore de données)"))}">${badge(l)}</button>`).join("") + "</div>").join("")
     || `<p class="lbl" style="margin:8px 0">Aucune ligne ne correspond.</p>`;
 }
-function setLine(id, keepDates) {
+export function setLine(id, keepDates) {
   const l = lineOf(id);
   $("linebtn").dataset.line = id;
   $("linebadge").outerHTML = badge(l, "lb").replace('class="lb"', 'class="lb" id="linebadge"');
   $("linename").textContent = l ? niceName(l.name) || "Ligne " + id : "Ligne " + id;
   // the whole collection range (not the line's): a period kept across lines stays valid in the form
   for (const k of ["from", "to", "a1", "a2", "b1", "b2"]) {
-    $(k).min = (INFO && INFO.ingested.from) || "";
-    $(k).max = (INFO && INFO.ingested.to) || "";
+    $(k).min = (S.info && S.info.ingested.from) || "";
+    $(k).max = (S.info && S.info.ingested.to) || "";
   }
-  XL.setRange(INFO && INFO.ingested.from, INFO && INFO.ingested.to);
+  XL.setRange(S.info && S.info.ingested.from, S.info && S.info.ingested.to);
   if (!keepDates || !$("from").value) defaultDates(l);
   presets();
 }
 function defaultDates(l) {
   const av = l && l.available;
-  const d = av && av.default ? av.default : (INFO ? {from: addDays(INFO.ingested.to, -89), to: INFO.ingested.to} : null);
+  const d = av && av.default ? av.default : (S.info ? {from: addDays(S.info.ingested.to, -89), to: S.info.ingested.to} : null);
   if (!d) return;
   $("from").value = d.from; $("to").value = d.to;
   // compare: the default period split in two halves
   const mid = addDays(d.from, Math.floor((new Date(d.to) - new Date(d.from)) / 864e5 / 2));
   $("a1").value = d.from; $("a2").value = mid; $("b1").value = addDays(mid, 1); $("b2").value = d.to;
 }
-function presets() {
+export function presets() {
   const l = lineOf($("linebtn").dataset.line), av = l && l.available;
-  if (!av || TAB !== "one") { $("presets").innerHTML = ""; return; }
+  if (!av || S.tab !== "one") { $("presets").innerHTML = ""; return; }
   const ms = av.months.filter(m => monthEnd(m) <= av.to);
   const opts = [];
   if (ms.length) opts.push(["Dernier mois", ms[ms.length - 1] + "-01", monthEnd(ms[ms.length - 1])]);
@@ -66,7 +69,7 @@ function presets() {
   presetState();
 }
 // a shortcut is shown as active only while the dates are exactly its dates
-function presetState() {
+export function presetState() {
   $("presets").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.a === $("from").value && b.dataset.b === $("to").value)));
 }
 ["from", "to"].forEach(id => $(id).addEventListener("input", presetState));

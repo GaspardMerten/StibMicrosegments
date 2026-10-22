@@ -1,11 +1,16 @@
-"""Result caching: data stamps, cache keys, Cache-Control, gzipped JSON in process and in the bucket."""
+"""Result caching: data stamps, cache keys, Cache-Control, ETags, gzipped JSON in process and in the bucket."""
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import functools
 import gzip
+import hashlib
 import io
 import json
 import time
+from dataclasses import dataclass
+from typing import Callable
 
 from fastapi import HTTPException, Request
 from fastapi.responses import Response
@@ -21,6 +26,7 @@ SHORT_CACHE = "public, max-age=300"
 RESULT_REV = 8
 
 
+@functools.cache
 def rev() -> str:
     """Release token added to the pages' API calls (``rev=``, ignored by the API): a new release (package
     or RESULT_REV) changes every URL, so browsers do not reuse responses cached under an older one.
@@ -74,51 +80,132 @@ def gzip_json(obj) -> bytes:
     return gzip.compress(json.dumps(obj, separators=(",", ":"), default=str).encode(), 6)
 
 
-def gz_response(request: Request, gz: bytes, cc: str, media="application/json", extra: dict | None = None) -> Response:
+# ---------------------------------------------------------------------------------- ETag
+def etag(key: str, gz: bool) -> str:
+    """Strong validator of the result ``key`` (it holds the parameters, RESULT_REV, the package and the
+    data stamp) in one encoding: the gzipped and the plain bodies are different bytes."""
+    h = hashlib.sha256(f"{key}:{rev()}".encode()).hexdigest()[:32]
+    return f'"{h}-gz"' if gz else f'"{h}"'
+
+
+def _accepts_gzip(request: Request) -> bool:
+    return "gzip" in request.headers.get("accept-encoding", "")
+
+
+def _matches(request: Request, tags: tuple[str, ...]) -> bool:
+    """If-None-Match against ``tags`` (weak comparison, as RFC 9110 asks for this header)."""
+    inm = request.headers.get("if-none-match", "")
+    if inm.strip() == "*":
+        return True
+    return any(t.strip().removeprefix("W/") in tags for t in inm.split(","))
+
+
+def not_modified(request: Request, key: str, cc: str) -> Response | None:
+    """A 304 when the client holds result ``key`` already (either encoding), else None."""
+    if not _matches(request, (etag(key, True), etag(key, False))):
+        return None
+    return Response(status_code=304, headers={"Cache-Control": cc, "Vary": "Accept-Encoding",
+                                              "ETag": etag(key, _accepts_gzip(request))})
+
+
+def gz_response(request: Request, gz: bytes, cc: str, media="application/json", extra: dict | None = None,
+                key: str | None = None) -> Response:
     headers = {"Cache-Control": cc, "Vary": "Accept-Encoding", **(extra or {})}
-    if "gzip" in request.headers.get("accept-encoding", ""):
+    zipped = _accepts_gzip(request)
+    if key is not None:
+        headers["ETag"] = etag(key, zipped)
+    if zipped:
         headers["Content-Encoding"] = "gzip"
         return Response(gz, media_type=media, headers=headers)
     return Response(gzip.decompress(gz), media_type=media, headers=headers)
 
 
-def _bucket_or_compute(data, key: str, compute) -> tuple[bytes, str]:
-    """(gzipped JSON, source): the bucket's copy, else computed under HEAVY and written there."""
-    from ..data import ALGO_VERSION
-    rel = f"results/v{ALGO_VERSION}/{key}.json.gz"
+def json_response(request: Request, obj, cc: str) -> Response:
+    """Small JSON (lines, status) with a weak ETag of its content: GZipMiddleware may re-encode it."""
+    body = json.dumps(obj, separators=(",", ":"), default=str).encode()
+    tag = 'W/"' + hashlib.sha256(body).hexdigest()[:32] + '"'
+    headers = {"Cache-Control": cc, "ETag": tag}
+    if _matches(request, (tag.removeprefix("W/"),)):
+        return Response(status_code=304, headers=headers)
+    return Response(body, media_type="application/json", headers=headers)
+
+
+# ---------------------------------------------------------------------------------- result cache
+def _bucket_read(data, rel: str) -> bytes | None:
     try:
-        gz = data.store.read_bytes(rel)      # one request: a missing object is the miss
+        return data.store.read_bytes(rel)      # one request: a missing object is the miss
     except FileNotFoundError:
-        gz = None
+        return None
     except Exception:  # noqa: BLE001 - a cache miss, not an error
         log.warning("result cache read failed for %s", rel, exc_info=True)
-        gz = None
+        return None
+
+
+def _bucket_or_compute(data, key: str, compute, heavy: bool = True, keep=None) -> tuple[bytes, str, bool]:
+    """(gzipped JSON, source, kept): the bucket's copy, else computed (under HEAVY unless ``heavy`` is
+    false) and written there unless ``keep(result)`` is false."""
+    from ..data import ALGO_VERSION
+    rel = f"results/v{ALGO_VERSION}/{key}.json.gz"
+    gz = _bucket_read(data, rel)
     if gz is not None:
-        return gz, "bucket"
-    with HEAVY:
+        return gz, "bucket", True
+    with HEAVY if heavy else contextlib.nullcontext():
         t = time.time()
-        gz = gzip_json(compute())
+        obj = compute()
+        gz = gzip_json(obj)
     log.info("%s computed in %.2f s (%d kB gz)", key, time.time() - t, len(gz) // 1024)
-    try:
-        data.store.write_bytes(rel, gz)
-    except Exception:  # noqa: BLE001
-        log.exception("result cache write failed")
-    return gz, "computed"
+    ok = keep is None or bool(keep(obj))
+    if ok:
+        try:
+            data.store.write_bytes(rel, gz)
+        except Exception:  # noqa: BLE001
+            log.exception("result cache write failed")
+    return gz, "computed", ok
+
+
+@dataclass(frozen=True)
+class Result:
+    """A cached JSON result: its family, query (``key``, ``last``, ``ranges``), compute() -> JSON-able,
+    more key parts; ``heavy``: computed under HEAVY; ``keep``: whether a result may be cached."""
+    kind: str
+    q: object
+    compute: Callable
+    extra: tuple = ()
+    heavy: bool = True
+    keep: Callable | None = None
+
+    def key(self, data) -> str:
+        return f"{self.kind}-r{RESULT_REV}-{self.q.key(data_stamp(data, self.q), *self.extra)}"
+
+
+def load(res: Result) -> tuple[str, bytes, str]:
+    """(key, gzipped JSON, source) of ``res``: in-process LRU, then bucket, then compute. Shared by the
+    API and ``stibms.warm``."""
+    data = state.data
+    key, src, kept = res.key(data), "memory", True
+
+    def get():
+        nonlocal src, kept
+        gz, src, kept = _bucket_or_compute(data, key, res.compute, res.heavy, res.keep)
+        return gz
+    gz = state.once(state.blobs, key, get, keep=lambda _: kept)
+    return key, gz, src
+
+
+def respond(request: Request, res: Result) -> Response:
+    """``res`` as an HTTP response: 304 on a matching If-None-Match (nothing loaded), else the body."""
+    data = state.data
+    cc = cache_control(data, res.q.last, res.q)
+    nm = not_modified(request, res.key(data), cc)
+    if nm is not None:
+        return nm
+    key, gz, src = load(res)
+    return gz_response(request, gz, cc, extra={"X-Cache": src}, key=key)
 
 
 def cached_json(kind: str, q, compute, request: Request, *extra) -> Response:
-    """kind: result family; compute() -> JSON-able; ``extra``: more key parts. In-process LRU, then
-    bucket, then compute."""
-    data = state.data
-    key = f"{kind}-r{RESULT_REV}-{q.key(data_stamp(data, q), *extra)}"
-    src = "memory"
-
-    def load():
-        nonlocal src
-        gz, src = _bucket_or_compute(data, key, compute)
-        return gz
-    gz = state.once(state.blobs, key, load)
-    return gz_response(request, gz, cache_control(data, q.last, q), extra={"X-Cache": src})
+    """kind: result family; compute() -> JSON-able; ``extra``: more key parts."""
+    return respond(request, Result(kind, q, compute, extra))
 
 
 def compute_run(q):

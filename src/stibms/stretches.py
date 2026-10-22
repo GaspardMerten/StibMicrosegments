@@ -10,9 +10,12 @@ import math
 import numpy as np
 import polars as pl
 
+from .data import SizedLRU
+
 MERGE_OVERLAP = 0.8   # two links of the same stop names are one stretch when >= 80 % of the shorter ...
 MERGE_DIST_M = 30.0   # ... lies within 30 m of the longer
-_ov_cache: dict[tuple[str, str], float] = {}   # (link_key, link_key) -> overlap
+OV_CACHE_N = 200_000  # pairs remembered (~200 B each): the network has a few thousand duplicate pairs
+_ov_cache = SizedLRU(OV_CACHE_N)   # (link_key, link_key) -> overlap; one unit per pair
 
 
 def _xy(coords, lat0: float):
@@ -49,7 +52,8 @@ def _overlap_keys(a: str, b: str, geo: dict) -> float:
     k = (a, b) if a < b else (b, a)
     v = _ov_cache.get(k)
     if v is None:
-        v = _ov_cache[k] = overlap(geo.get(a), geo.get(b))
+        v = overlap(geo.get(a), geo.get(b))
+        _ov_cache.put(k, v, 1)
     return v
 
 

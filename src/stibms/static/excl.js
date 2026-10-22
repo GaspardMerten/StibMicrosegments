@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------- excluded days: one block, one row per category
 // API defaults: public holidays and strikes (reduced service) excluded, school holidays included, no period.
 // The same block on the line page and the ranking; "Exclure cette période" (route changes) adds to its periods.
-"use strict";
+import {$, addDays, andList, fspan, iso} from "./util.js?rev=__REV__";
+
 const XCATS = [["holidays", "Jours fériés", "Jours fériés belges"],
   ["reduced", "Grèves / service réduit", "Jours où la STIB prévoit un service réduit"],
   ["school", "Vacances scolaires", "Jours où la STIB roule en horaire de vacances"],
@@ -87,4 +88,4 @@ function makeExcl(el, sumEl) {
   draw();
   return X;
 }
-const XL = makeExcl($("xbox"), $("xsum")), XR = makeExcl($("rxbox"), $("rxsum"));
+export const XL = makeExcl($("xbox"), $("xsum")), XR = makeExcl($("rxbox"), $("rxsum"));

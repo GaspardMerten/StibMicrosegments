@@ -15,7 +15,8 @@ Per service date D (04:00 -> 03:00 Europe/Brussels), all lines:
 
 Nightly (``--date yesterday``): the touched month is re-derived (on the 1st, yesterday is the last day
 of the previous month, so that month is completed; a month whose derive is missing is retried), then
-the network ranking of the default window is refreshed (``stibms.ranking``).
+the network ranking of the default window is refreshed (``stibms.ranking``) and the pages' default
+requests are precomputed into the result cache (``stibms.warm``, a subprocess with a time budget).
 
 A date with its _SUCCESS is skipped unless --force, so reruns and job retries are no-ops.
 --date accepts ``yesterday`` (the nightly job). With --shard-from-env the date list is split
@@ -161,6 +162,24 @@ def refresh_ranking(store: Store) -> bool:
         return True
 
 
+WARM_S = 2400    # the warm-up shares the job's hour with the ingest and the derive
+
+
+def warm_pages(root: str) -> None:
+    """Precompute the default page results in a separate process (its memory is freed on exit). Only
+    a cache: a failure or the time budget running out is logged, not reported."""
+    import subprocess
+    if not _have_package():
+        return
+    flag = "--local" if "://" not in root else "--bucket"
+    try:
+        r = subprocess.run([sys.executable, "-m", "stibms.warm", flag, root], timeout=WARM_S)
+        if r.returncode:
+            log.warning("warm-up ended with code %d", r.returncode)
+    except subprocess.TimeoutExpired:
+        log.warning("warm-up stopped after %d s", WARM_S)
+
+
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m stibms.ingest", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -175,6 +194,7 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--workers", type=int, default=vd.WORKERS)
     ap.add_argument("--no-index", action="store_true", help="do not rebuild gtfs/index.parquet")
     ap.add_argument("--no-ranking", action="store_true", help="nightly: do not refresh the network ranking")
+    ap.add_argument("--no-warm", action="store_true", help="nightly: do not precompute the default pages")
     ap.add_argument("--no-derive", action="store_true",
                     help="do not re-derive the touched months afterwards (always skipped with --shard-from-env)")
     return ap
@@ -205,6 +225,8 @@ def _after_ingest(store: Store, args, done: list[date]) -> bool:
     # the network ranking of the default window (last complete month): a sum over the link cubes
     if nightly and not args.no_ranking:
         bad |= refresh_ranking(store)
+    if nightly and not args.no_warm:
+        warm_pages(args.local or args.bucket or os.environ["MS_BUCKET"])
     return bad
 
 

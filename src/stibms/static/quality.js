@@ -1,8 +1,9 @@
 // ---------------------------------------------------------------- data quality
 // One coloured square per day. Before the analysis: /api/coverage and the chosen exclusions; once the
 // frame has loaded, its contract ({ms: "summary"}) says which days the analysis kept and why the others went.
-"use strict";
-const REASONS = {low_coverage: ["flux incomplet", "flux incomplet"], frozen: ["flux figé", "flux figé"], no_data: ["sans données", "sans données"],
+import {$, DOW, S, esc, fdate, fmonth, nf} from "./util.js?rev=__REV__";
+
+export const REASONS = {low_coverage: ["flux incomplet", "flux incomplet"], frozen: ["flux figé", "flux figé"], no_data: ["sans données", "sans données"],
   line_absent: ["ligne absente du flux", "ligne absente du flux"], deviation: ["hors itinéraire", "hors itinéraire"],
   vehicle_ratio: ["nombre de véhicules anormal", "nombre de véhicules anormal"], holiday: ["férié", "fériés"],
   school_holiday: ["en vacances scolaires", "en vacances scolaires"], reduced_service: ["de grève", "de grève"],
@@ -18,7 +19,11 @@ const LEGEND = [["ok", "retenu"], ["holiday", "férié"], ["school_holiday", "va
 const colOf = k => COL[k] || COL.line_absent;
 const big = v => v >= 1e6 ? `${nf(v / 1e6, 1)} million${v >= 2e6 ? "s" : ""}` : nf(v);
 let QUAL = null;      // {periods: [[label, days]], dows, reason: the run's days and exclusions, sum: the frame's summary or null}
-function dowsSel() {
+// the run's coverage (null: none); returns the periods' summaries ([] when none)
+export function setQuality(q) { QUAL = q; return q ? drawQuality() : []; }
+// the frame's summary of the analysis, for the current run only
+export function setSummary(m) { if (QUAL) { QUAL.sum = m; drawQuality(); } }
+export function dowsSel() {
   const checked = [...$("dow").querySelectorAll("input:checked")].map(x => +x.value);
   return new Set(checked.length ? checked : [0, 1, 2, 3, 4]);
 }
@@ -42,7 +47,7 @@ function covSummary(days, dows, reason, label, ps) {
   return {ok, sel: sel.length, by, seen, html: `<div class="cov">${label ? `<b class="${label === "A" ? "pa" : "pb"}">${label}</b>` : ""}<span><b>${nf(ok)}</b> jour${ok > 1 ? "s" : ""} retenu${ok > 1 ? "s" : ""} sur ${sel.length}${parts.length ? " (" + parts.join(", ") + ")" : ""}</span><span class="strip">${strip}</span></div>`};
 }
 function drawQuality() {
-  if (!QUAL) return;
+  if (!QUAL) return [];
   const dows = QUAL.dows, sum = QUAL.sum, seen = new Set();
   const covs = QUAL.periods.map(([label, days], i) => {
     const ps = sum ? (sum.compare ? sum.compare[i ? "b" : "a"] : sum.period) : null;
@@ -66,8 +71,8 @@ function covNotes(sum) {
     notes.push(`<div class="notice info"><b>Données en cours de préparation.</b> Les signalements de ${ms.join(", ")} sont collectés mais pas encore calculés${sum.ok ? " : ces jours-là sont laissés de côté pour l'instant" : ""}. Le calcul tourne en arrière-plan ; réessayez dans quelques minutes.</div>`);
   }
   const to = QUAL.periods.map(p => (p[1][p[1].length - 1] || {}).date || "").sort().pop();
-  if (ni.length && ni.length === sum.sel) notes.push(INFO.ingested.from && to < INFO.ingested.from
-    ? `<div class="notice"><b>Pas de données</b> pour cette période : la collecte commence le ${fdate(INFO.ingested.from)}.</div>`
-    : `<div class="notice"><b>Pas encore de données</b> pour cette période : la collecte va jusqu'au ${fdate(INFO.ingested.to)}.</div>`);
+  if (ni.length && ni.length === sum.sel) notes.push(S.info.ingested.from && to < S.info.ingested.from
+    ? `<div class="notice"><b>Pas de données</b> pour cette période : la collecte commence le ${fdate(S.info.ingested.from)}.</div>`
+    : `<div class="notice"><b>Pas encore de données</b> pour cette période : la collecte va jusqu'au ${fdate(S.info.ingested.to)}.</div>`);
   return notes.join("");
 }

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query as Q, Request
 
-from .cache import cache_control, cached_json, cached_run, compute_run, table_response
+from .cache import Result, cache_control, cached_json, cached_run, compute_run, respond, table_response
 from .context import state
 from .params import compare_query, period, query
 
@@ -11,12 +11,12 @@ router = APIRouter()
 TABLES = ("csv", "parquet")
 
 
-def _period_json(request: Request, kind: str, p, key: str, rows, **kw):
-    """``{line, from, to, key: rows()}`` through the result cache (``kw``: PeriodQuery options)."""
+def _period_result(kind: str, p, key: str, rows, **kw) -> Result:
+    """``{line, from, to, key: rows()}`` as a cached result (``kw``: PeriodQuery options)."""
     from ..queries import PeriodQuery
     line, a, b = p
     q = PeriodQuery(line, a, b, **kw)
-    return cached_json(kind, q, lambda: {"line": line, "from": a.isoformat(), "to": b.isoformat(), key: rows()}, request)
+    return Result(kind, q, lambda: {"line": line, "from": a.isoformat(), "to": b.isoformat(), key: rows()})
 
 
 def _fname(q, what: str) -> str:
@@ -29,20 +29,18 @@ def _table(fmt: str, q, what: str, frame):
     return table_response(frame(cached_run(q)), fmt, _fname(q, what), cache_control(state.data, q.last, q))
 
 
-@router.get("/api/coverage")
-def coverage(request: Request, p=Depends(period)):
+# the results the pages load by default (stibms.warm precomputes them): built here, served below
+def coverage_result(p) -> Result:
     from ..coverage import coverage_days
-    return _period_json(request, "coverage", p, "days", lambda: coverage_days(state.data, *p), schedule=True)
+    return _period_result("coverage", p, "days", lambda: coverage_days(state.data, *p), schedule=True)
 
 
-@router.get("/api/versions")
-def versions(request: Request, p=Depends(period)):
+def versions_result(p) -> Result:
     from ..versions import LOOKBACK_DAYS, versions as route_versions
-    return _period_json(request, "versions", p, "versions", lambda: route_versions(state.data, *p), back=LOOKBACK_DAYS)
+    return _period_result("versions", p, "versions", lambda: route_versions(state.data, *p), back=LOOKBACK_DAYS)
 
 
-@router.get("/api/analysis")
-def analysis(request: Request, q=Depends(query)):
+def analysis_result(q) -> Result:
     from .. import analysis as A
 
     def compute():
@@ -50,7 +48,22 @@ def analysis(request: Request, q=Depends(query)):
         c = A.contract(r)
         c["timings"] = r.timings
         return c
-    return cached_json("analysis", q, compute, request)
+    return Result("analysis", q, compute)
+
+
+@router.get("/api/coverage")
+def coverage(request: Request, p=Depends(period)):
+    return respond(request, coverage_result(p))
+
+
+@router.get("/api/versions")
+def versions(request: Request, p=Depends(period)):
+    return respond(request, versions_result(p))
+
+
+@router.get("/api/analysis")
+def analysis(request: Request, q=Depends(query)):
+    return respond(request, analysis_result(q))
 
 
 @router.get("/api/analysis.{fmt}")

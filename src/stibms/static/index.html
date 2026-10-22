@@ -96,14 +96,15 @@
   <footer>Données : STIB vehicle-distance et punctuality via <a href="https://mobilitytwin.brussels">MobilityTwin.Brussels</a>, GTFS STIB. Paquet open source <a href="https://github.com/GaspardMerten/microsegments">microsegments</a> · <a href="/api/docs">API</a>.</footer>
 </main>
 
-<!-- classic scripts sharing one scope, in this order (util.js first, main.js boots) -->
-<script src="/static/util.js?rev=__REV__"></script>
-<script src="/static/excl.js?rev=__REV__"></script>
-<script src="/static/lines.js?rev=__REV__"></script>
-<script src="/static/quality.js?rev=__REV__"></script>
-<script src="/static/lineview.js?rev=__REV__"></script>
-<script src="/static/routes.js?rev=__REV__"></script>
-<script src="/static/rank.js?rev=__REV__"></script>
-<script src="/static/main.js?rev=__REV__"></script>
+<!-- ES modules: main.js imports the others (each import names its dependencies); the preloads only
+     fetch them in parallel. Every specifier carries ?rev=__REV__: one module instance per release. -->
+<link rel="modulepreload" href="/static/util.js?rev=__REV__">
+<link rel="modulepreload" href="/static/excl.js?rev=__REV__">
+<link rel="modulepreload" href="/static/quality.js?rev=__REV__">
+<link rel="modulepreload" href="/static/routes.js?rev=__REV__">
+<link rel="modulepreload" href="/static/lineview.js?rev=__REV__">
+<link rel="modulepreload" href="/static/lines.js?rev=__REV__">
+<link rel="modulepreload" href="/static/rank.js?rev=__REV__">
+<script type="module" src="/static/main.js?rev=__REV__"></script>
 </body>
 </html>

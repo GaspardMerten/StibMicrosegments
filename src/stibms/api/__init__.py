@@ -40,7 +40,11 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
 Results (analysis, compare, hotspots, tune, coverage, versions) are cached in process (LRU) and in
 the bucket (``results/v{ALGO}/<hash>.json.gz``), keyed by the parameters, ALGO_VERSION, the package version and the data stamp (last ingested date and
 derive time of the months involved), so a nightly ingest invalidates only what it touches.
-Periods that are fully past and ingested are sent with ``Cache-Control: max-age=86400``.
+The ranking goes through the same cache (without HEAVY; an empty ranking is not cached).
+Periods that are fully past and ingested are sent with ``Cache-Control: max-age=3600``, others 300 s.
+Every cached result carries a strong ETag (hash of its key and the release, one per encoding) and a
+matching If-None-Match gets a 304 without loading the result; /api/lines and /api/status a weak one.
+``python -m stibms.warm`` precomputes the pages' default requests (after the nightly derive).
 Heavy imports (polars, microsegments) happen on the first data request, not at start-up.
 CPU-heavy work (an analysis or comparison not in cache) runs one at a time per instance (``HEAVY``),
 so a burst of new requests cannot starve the cheap ones (health, lines, cached results, ranking);

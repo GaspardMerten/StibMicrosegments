@@ -4,10 +4,9 @@ from __future__ import annotations
 import datetime as dt
 import os
 
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Request
 
-from .cache import SHORT_CACHE
+from .cache import SHORT_CACHE, json_response
 from .context import state
 from .params import parse_date
 
@@ -92,14 +91,14 @@ def health():
 
 
 @router.get("/api/lines")
-def lines(date: str | None = None):
+def lines(request: Request, date: str | None = None):
     data = state.data
     res = data._cached(f"lines:{date}", lambda: _lines(data, date), ttl=300)
-    return JSONResponse(res, headers={"Cache-Control": SHORT_CACHE})
+    return json_response(request, res, SHORT_CACHE)
 
 
 @router.get("/api/status")
-def status():
+def status(request: Request):
     from ..ranking import DEFAULT_PTR
     data = state.data
     res = data._cached("status", lambda: _months_info(data), ttl=120)
@@ -107,4 +106,4 @@ def status():
         res = {**res, "ranking_default": data.store.read_json(DEFAULT_PTR)}
     except FileNotFoundError:
         res = {**res, "ranking_default": None}
-    return JSONResponse(res, headers={"Cache-Control": "public, max-age=60"})
+    return json_response(request, res, "public, max-age=60")
