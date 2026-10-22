@@ -14,7 +14,8 @@ did not see use the day's own lengths), and the month is placed in full again:
 - whenever it has twice the days of its last full run (nights 2, 4, 8, 16 of a month): every day is
   then placed with lengths learned on at least half the month (lengths from days 1-11 vs 1-21:
   0.1-1.2 % of observations move, 63 being the worst);
-- on the night that brings its last calendar day, so a closed month is exactly the full derive;
+- on the night that brings its last calendar day, so a closed month is exactly the full derive, or
+  once after the month has ended without it (that day's ingest failed: ``closed_full`` in the report);
 - after a package or ``ALGO_VERSION`` change, a failed line, or with ``--full``.
 """
 from __future__ import annotations
@@ -26,6 +27,7 @@ import polars as pl
 
 from . import ms
 from .data import ALGO_VERSION, Data, by_line, derived, month_dates
+from .servicedays import yesterday
 
 FULL_GROWTH = 2.0      # full run when the month has this many times the days of its last full run
 MIN_ROWS = 20          # feed length learned on fewer rows: the GTFS length (as microsegments)
@@ -49,9 +51,28 @@ def _full_reason(month: str, dates: list[dt.date], prev: dict | None) -> str | N
     return None
 
 
+def is_closed(month: str) -> bool:
+    """The month ended before yesterday's service day (no new day can come)."""
+    return month_dates(month)[-1] < yesterday()
+
+
+def closed_full(prev: dict) -> bool:
+    """The month's last full run saw it closed (older reports: it placed every day up to the last one)."""
+    if "closed_full" in prev:
+        return bool(prev["closed_full"])
+    dates = prev.get("dates", [])
+    return bool(dates) and dates[-1] == month_dates(prev["month"])[-1].isoformat() and prev.get("full_days") == len(dates)
+
+
+def needs_close(month: str, prev: dict | None) -> bool:
+    """A derived month that ended without a full run of its final state (the nightly derives it once)."""
+    return prev is not None and is_closed(month) and not closed_full(prev)
+
+
 def changed_days(data: Data, dates: list[dt.date], prev: dict) -> list[dt.date]:
-    """Dates not derived yet, or re-ingested after the month's last derive."""
-    done, at = set(prev.get("dates", [])), prev.get("written_at", "")
+    """Dates not derived yet, or re-ingested after the month's last placement (``placed_at``; older
+    reports: ``written_at``, which coverage rewrites also bump)."""
+    done, at = set(prev.get("dates", [])), prev.get("placed_at") or prev.get("written_at", "")
 
     def stamp(d: dt.date) -> str:
         try:
@@ -67,6 +88,8 @@ def plan(data: Data, month: str, dates: list[dt.date], prev: dict | None, full: 
     why = "asked" if full else _full_reason(month, dates, prev)
     if why:
         return {"mode": "full", "days": dates, "why": why}
+    if needs_close(month, prev):
+        return {"mode": "full", "days": dates, "why": "month closed"}
     new = changed_days(data, dates, prev)
     if not new:
         return {"mode": "current", "days": [], "why": "up to date"}
@@ -113,17 +136,22 @@ def now() -> str:
 def report(month: str, dates: list[dt.date], plan: dict, prev: dict | None, per_line: list, failed: dict,
            partial: bool) -> dict:
     """The month's derive report. An incremental (or ``partial``: some lines) run keeps the other
-    lines' entries and aliases, and the day count of the month's last full run."""
+    lines' entries, failures and aliases, and the day count of the month's last full run."""
     prev = prev or {}
     keep = plan["mode"] == "incremental" or partial
     old = {r["line"]: r for r in prev.get("per_line", [])} if keep else {}
     merged = {**old, **{r["line"]: r for r in per_line}}
+    if keep:     # lines not re-run (or failing again) keep their failure
+        ok = {r["line"] for r in per_line}
+        failed = {**{k: v for k, v in prev.get("failed", {}).items() if k not in ok}, **failed}
     aliases = dict(prev.get("aliases", {})) if keep else {}
     if plan["mode"] == "full":
         aliases.update({r["line"]: r.get("aliases", {}) for r in per_line})
     fresh = plan["mode"] == "full" and not (partial and "full_days" in prev)
+    closed = (month_dates(month)[-1] in dates or is_closed(month)) if fresh else bool(prev) and closed_full(prev)
     return {"month": month, "algo": ALGO_VERSION, "microsegments": ms.version(),
             "dates": [d.isoformat() for d in dates], "lines": len(merged), "failed": failed,
             "mode": plan["mode"], "why": plan["why"], "days_placed": [d.isoformat() for d in plan["days"]],
             "full_days": len(dates) if fresh else prev["full_days"], "full_at": now() if fresh else prev.get("full_at"),
+            "closed_full": closed,
             "aliases": aliases, "per_line": sorted(merged.values(), key=lambda r: by_line(r["line"]))}

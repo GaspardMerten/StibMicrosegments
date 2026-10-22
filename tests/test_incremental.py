@@ -143,3 +143,51 @@ def test_linenets_forget_falls_back(raw_root):
     from stibms.derive import main
     assert main(["--local", str(raw_root), "--linenets-only"]) == 0     # the backfill job's command
     assert linenets.network(Data(str(raw_root)), "S1", dates) is not None
+
+
+def _prev(raw_root):
+    _derive(raw_root)
+    data = Data(str(raw_root))
+    return data, data.store.read_json(derived(f"_SUCCESS/month={MAY}.json"))
+
+
+def test_closed_month_without_its_last_day_full_once(raw_root, monkeypatch):
+    from stibms import increment
+    last = START + dt.timedelta(days=5)
+    _hide(raw_root, [last])                    # the month's last day never ingested
+    data, prev = _prev(raw_root)
+    dates = data.month_ingested(MAY)
+    assert prev["closed_full"]                  # derived after the month ended: its final state
+    open_prev = {**prev, "closed_full": False}  # derived while it was running
+    assert increment.plan(data, MAY, dates, open_prev) == {"mode": "full", "days": dates, "why": "month closed"}
+    plan = increment.plan(data, MAY, dates, open_prev)
+    rep = increment.report(MAY, dates, plan, open_prev, [], {}, partial=False)
+    assert rep["closed_full"] and increment.plan(data, MAY, dates, rep)["mode"] == "current"   # only once
+    monkeypatch.setattr(increment, "is_closed", lambda m: False)            # still running: nothing to do
+    assert increment.plan(data, MAY, dates, open_prev)["mode"] == "current"
+    legacy = {k: v for k, v in prev.items() if k != "closed_full"}         # reports before closed_full
+    assert not increment.closed_full(legacy)
+    assert increment.closed_full({**legacy, "dates": [*legacy["dates"], str(last)], "full_days": 6})
+
+
+def test_placed_at_not_written_at(raw_root):
+    from stibms import increment
+    data, prev = _prev(raw_root)
+    dates = data.month_ingested(MAY)
+    d = START + dt.timedelta(days=2)
+    (raw_root / f"raw/_SUCCESS/date={d}.json").write_text(json.dumps({"written_at": "2500-01-01T00:00:00+00:00"}))
+    # a coverage rewrite after the re-ingest bumps written_at only
+    bumped = {**prev, "written_at": "2600-01-01T00:00:00+00:00"}
+    assert increment.changed_days(data, dates, bumped) == [d]
+    assert increment.changed_days(data, dates, {k: v for k, v in bumped.items() if k != "placed_at"}) == []
+
+
+def test_partial_run_keeps_other_failures():
+    from stibms import increment
+    days = [START]
+    prev = {"month": MAY, "dates": [str(START)], "full_days": 1, "failed": {"A": "boom", "B": "boom"},
+            "per_line": [{"line": "C"}], "aliases": {}}
+    plan = {"mode": "full", "days": days, "why": "asked"}
+    rep = increment.report(MAY, days, plan, prev, [{"line": "B"}], {"D": "new"}, partial=True)
+    assert rep["failed"] == {"A": "boom", "D": "new"}       # B re-run fine, A not re-run
+    assert increment.report(MAY, days, plan, prev, [{"line": "B"}], {}, partial=False)["failed"] == {}

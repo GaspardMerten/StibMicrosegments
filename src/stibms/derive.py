@@ -271,7 +271,7 @@ def derive_month(data: Data, month: str, lines: list[str] | None = None, force_p
     """Derive ``month``: in full, or only its new service days (``stibms.increment.plan``: the
     nightly run); ``lines`` (a subset), ``full`` and ``force_patterns`` always run in full."""
     from . import linkcube
-    t0 = time.time()
+    t0, started = time.time(), _now()   # placed_at: raw days re-ingested after this are placed again
     dates = data.month_ingested(month)
     if not dates:
         log.warning("%s: no ingested date", month)
@@ -297,7 +297,8 @@ def derive_month(data: Data, month: str, lines: list[str] | None = None, force_p
         "seconds": {"patterns": round(t_pat, 1), "coverage": round(t_cov, 1), "split": round(t_split, 1),
                     "lines": round(sum(r.get("seconds", 0) for r in per_line), 1), "linkcube": round(t_cube, 1),
                     "total": round(time.time() - t0, 1)},
-        "patterns": pat, "linkcube": {k: cube[k] for k in ("rows", "failed")}, "written_at": _now()})
+        "patterns": pat, "linkcube": {k: cube[k] for k in ("rows", "failed")}, "placed_at": started,
+        "written_at": _now()})
     data.store.write_json(derived(f"_SUCCESS/month={month}.json"), report)
     data.invalidate()
     log.info("%s: %s, %d dates (%d placed), %d lines, %d failed, %s", month, plan["mode"], len(dates),

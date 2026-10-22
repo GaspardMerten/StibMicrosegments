@@ -146,6 +146,7 @@ def test_pages(client):
     v = client.get("/view")
     if v.status_code == 200:   # package template present: data comes from the fetch shim
         assert 'id="ms-main"' in v.text and "/api/analysis" in v.text and "__DATA__" not in v.text
+        assert 'q.set("rev"' in v.text      # the frame's URL has rev already: set, not appended
     else:
         assert v.status_code == 404
 
@@ -188,6 +189,7 @@ def test_ranking(client):
     assert r.status_code == 200, r.text
     res = r.json()
     assert res["status"] == "done" and res["lines_used"] == 1 and res["zones"] == "running"
+    assert res["lines_total"] == 1 and res["lines_gone"] == []     # S1 is in the latest feed
     s = res["stretches"]
     assert 0 < len(s) <= 10 and s[0]["rank"] == 1
     assert s[0]["veh_h_day"] >= s[-1]["veh_h_day"]
@@ -656,3 +658,18 @@ def test_page_scripts_are_modules(client):
         js = client.get(f"/static/{name}.js").text
         specs = re.findall(r'from "([^"]+)"', js)
         assert all(s.endswith(f".js?rev={rev()}") for s in specs), (name, specs)   # one instance per module
+
+
+def test_warm_skips_a_refused_request(client, monkeypatch):
+    from fastapi import HTTPException
+    from stibms import warm
+
+    def refuse(code):
+        def f():
+            raise HTTPException(code, "no")
+        return f
+    assert warm._warm("x", refuse(404)) == "missing" and warm._warm("x", refuse(422)) == "failed"
+    monkeypatch.setattr(warm, "ranking_result", refuse(422))
+    monkeypatch.setattr(warm, "default_lines", lambda data, only: [("S1", {"from": "2025-05-26", "to": "2025-05-27"})])
+    monkeypatch.setattr(warm, "line_results", lambda ln, d, a: [(f"coverage {ln}", refuse(404))])
+    assert warm.run() == {"failed": 1, "missing": 1}

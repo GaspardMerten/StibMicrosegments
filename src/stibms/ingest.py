@@ -14,9 +14,10 @@ Per service date D (04:00 -> 03:00 Europe/Brussels), all lines:
     raw/_SUCCESS/date=D.json           counts, sources, bytes; written last
 
 Nightly (``--date yesterday``): the touched month is re-derived (on the 1st, yesterday is the last day
-of the previous month, so that month is completed; a month whose derive is missing is retried), then
-the network ranking of the default window is refreshed (``stibms.ranking``) and the pages' default
-requests are precomputed into the result cache (``stibms.warm``, a subprocess with a time budget).
+of the previous month, so that month is completed; a month whose derive is missing is retried, and
+the previous month once more if it ended without its full run), then the network ranking of the
+default window is refreshed (``stibms.ranking``) and the pages' default requests are precomputed
+into the result cache (``stibms.warm``, a subprocess given the time left in the job).
 
 A date with its _SUCCESS is skipped unless --force, so reruns and job retries are no-ops.
 --date accepts ``yesterday`` (the nightly job). With --shard-from-env the date list is split
@@ -28,10 +29,11 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import sys
 import time
 import traceback
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from . import __version__, gtfs, punctuality, vd
 from .data import derived, month_key
@@ -40,6 +42,7 @@ from .servicedays import date_range, parse_date, window
 from .storage import Store
 
 log = logging.getLogger("stibms.ingest")
+STARTED = time.time()     # ~ process start: the warm-up gets what is left of the job's timeout
 READY_MARGIN_S = 20 * 60  # the last hourly bulk file lands ~30 min after the hour; JSON fills the rest
 
 
@@ -58,7 +61,6 @@ def source_check(store: Store, d: date, lines: int, back: int = 10) -> dict:
     """Lines of the day vs the median of the previous ingested days of the same kind (weekday /
     Saturday / Sunday). ``partial_source``: the feed itself carried only part of the network that day
     (see vd.py); the analysis then excludes the missing lines per line."""
-    from datetime import timedelta
     kind = lambda x: max(x.weekday(), 4)  # noqa: E731 - Monday-Friday (4), Saturday (5), Sunday (6)
     prev = []
     for i in range(1, 29):
@@ -162,22 +164,39 @@ def refresh_ranking(store: Store) -> bool:
         return True
 
 
-WARM_S = 2400    # the warm-up shares the job's hour with the ingest and the derive
+JOB_S = 3300       # the job's timeout (terraform/run.tf: 3600 s) less a margin
+MIN_WARM_S = 120   # less left than this: no warm-up
+
+
+def warm_budget() -> float:
+    return JOB_S - (time.time() - STARTED)
+
+
+def drop_feed_copies() -> None:
+    """Remove the local GTFS feed copies (``Data.feed_dir``; /tmp is memory on Cloud Run). Nothing in
+    this process reads them after the derive; the warm-up downloads again the few it needs."""
+    shutil.rmtree(os.path.join(os.environ.get("MS_CACHE", "/tmp/stibms-cache"), "gtfs"), ignore_errors=True)
 
 
 def warm_pages(root: str) -> None:
-    """Precompute the default page results in a separate process (its memory is freed on exit). Only
-    a cache: a failure or the time budget running out is logged, not reported."""
+    """Precompute the default page results in a separate process (its memory is freed on exit), in
+    the time left in the job. Only a cache: a failure or the budget running out is logged, not reported."""
     import subprocess
     if not _have_package():
         return
-    flag = "--local" if "://" not in root else "--bucket"
+    budget = warm_budget()
+    if budget < MIN_WARM_S:
+        log.warning("warm-up skipped: %.0f s left in the job", budget)
+        return
+    remote = "://" in root
+    if remote:
+        drop_feed_copies()
     try:
-        r = subprocess.run([sys.executable, "-m", "stibms.warm", flag, root], timeout=WARM_S)
+        r = subprocess.run([sys.executable, "-m", "stibms.warm", "--bucket" if remote else "--local", root], timeout=budget)
         if r.returncode:
             log.warning("warm-up ended with code %d", r.returncode)
     except subprocess.TimeoutExpired:
-        log.warning("warm-up stopped after %d s", WARM_S)
+        log.warning("warm-up stopped after %.0f s", budget)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -211,16 +230,28 @@ def _dates(args) -> list[date]:
     return dates
 
 
+def _nightly_extra(store: Store, m: str) -> set[str]:
+    """Months the nightly derives without a new day: the month of yesterday if its derive is missing
+    (a failed night), the month before if it ended without a full run of its final state
+    (``increment.needs_close``: its last day's ingest failed)."""
+    from . import increment
+    from .data import month_dates
+    out = set() if store.exists(derived(f"_SUCCESS/month={m}.json")) else {m}
+    before = month_key(month_dates(m)[0] - timedelta(days=1))
+    try:
+        prev = store.read_json(derived(f"_SUCCESS/month={before}.json"))
+    except FileNotFoundError:
+        prev = None
+    return out | ({before} if increment.needs_close(before, prev) else set())
+
+
 def _after_ingest(store: Store, args, done: list[date]) -> bool:
     """Re-derive the months that got new days (the nightly run: the current month, all lines), then
     on the nightly run refresh the default ranking. Returns True if something failed."""
     nightly = args.date.strip().lower() == "yesterday"
     months = {month_key(d) for d in done}
     if nightly:
-        # also retry the month of yesterday if its derive is missing (a failed night)
-        m = month_key(parse_date("yesterday"))
-        if m not in months and not store.exists(derived(f"_SUCCESS/month={m}.json")):
-            months.add(m)
+        months |= _nightly_extra(store, month_key(parse_date("yesterday")))
     bad = derive_months(store, sorted(months)) if months else False
     # the network ranking of the default window (last complete month): a sum over the link cubes
     if nightly and not args.no_ranking:

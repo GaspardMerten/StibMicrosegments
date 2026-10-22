@@ -183,3 +183,28 @@ def test_partial_source_flag(tmp_path):
     assert ingest.source_check(store, d, 15) == {"partial_source": True, "lines_ref": 78}
     assert not ingest.source_check(store, d, 76)["partial_source"]
     assert not ingest.source_check(store, date(2024, 1, 1), 5)["partial_source"]   # no history
+
+
+def test_warm_budget_and_skip(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(ingest, "_have_package", lambda: True)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, timeout: calls.append(timeout) or subprocess.CompletedProcess(cmd, 0))
+    monkeypatch.setattr(ingest, "STARTED", ingest.time.time() - ingest.JOB_S + 60)
+    ingest.warm_pages("/tmp/x")
+    assert calls == []                                      # 60 s left: skipped
+    monkeypatch.setattr(ingest, "STARTED", ingest.time.time() - 1000)
+    ingest.warm_pages("/tmp/x")
+    assert len(calls) == 1 and ingest.JOB_S - 1010 < calls[0] <= ingest.JOB_S - 1000
+
+
+def test_nightly_closes_previous_month(tmp_path):
+    from stibms.data import derived
+    store = Store(str(tmp_path))
+    rel = lambda m: derived(f"_SUCCESS/month={m}.json")  # noqa: E731
+    store.write_json(rel("2025-05"), {"month": "2025-05", "dates": ["2025-05-30"], "full_days": 1})
+    store.write_json(rel("2025-06"), {"month": "2025-06", "dates": ["2025-06-01"], "full_days": 1})
+    assert ingest._nightly_extra(store, "2025-06") == {"2025-05"}      # May ended without its 31st
+    store.write_json(rel("2025-05"), {"month": "2025-05", "dates": ["2025-05-30"], "closed_full": True})
+    assert ingest._nightly_extra(store, "2025-06") == set()
+    assert ingest._nightly_extra(store, "2025-07") == {"2025-06", "2025-07"}   # + missing derive retried

@@ -60,6 +60,8 @@ const RREASON_LONG = {terminus: "terminus de la ligne (pause entre deux courses)
   holding: "arrêt où des véhicules attendent plus de 3 min pour respecter l'horaire"};
 const PHONE = matchMedia("(max-width:600px)");
 const PEAK = {am: "surtout le matin", pm: "surtout l'après-midi", day: "toute la journée"};
+// lines of the window the line list (latest GTFS) no longer has: why "sur 89" when the list shows 87
+const goneTxt = g => g && g.length ? `, dont ${g.length} hors du réseau actuel (${g.map(esc).join(", ")})` : "";
 // the sentence above the tiles: period, days, exclusions, mode, and what the top stretches cost
 function rankSummary(R, S, top, modeTxt) {
   const q = R.query;
@@ -75,7 +77,7 @@ function rankSummary(R, S, top, modeTxt) {
       <div class="tile"><b>${nf(S[0].veh_h_day, 1)} h</b><span>par jour sur le tronçon n° 1, ${esc(S[0].from)} → ${esc(S[0].to)}</span></div>
       <div class="tile"><b>${nf(top, 0)} h</b><span>par jour sur les ${S.length} premiers tronçons</span></div>
       <div class="tile"><b>${nf(R.total_veh_h_day, 0)} h</b><span>par jour sur tout le réseau (tronçons en perte)</span></div>
-      <div class="tile"><b>${R.lines_used}</b><span>lignes analysées${R.lines_total > R.lines_used ? ` sur ${R.lines_total}` : ""}</span></div>
+      <div class="tile"><b>${R.lines_used}</b><span>lignes analysées${R.lines_total > R.lines_used ? ` sur ${R.lines_total}` : ""}${goneTxt(R.lines_gone)}</span></div>
     </div>`;
 }
 // one row per stretch; its line badges open the line page with the same days and exclusions

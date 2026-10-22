@@ -24,12 +24,13 @@ from concurrent.futures import ThreadPoolExecutor
 log = logging.getLogger("stibms.warm")
 
 
-def _warm(name: str, res) -> str:
-    """'computed' | 'bucket' | 'missing' (404: nothing to show) | 'failed'."""
+def _warm(name: str, make) -> str:
+    """'computed' | 'bucket' | 'missing' (404: nothing to show) | 'failed'. ``make`` builds the result
+    here, so a request the API would refuse (404, 422) skips this item only."""
     from fastapi import HTTPException
     from .api.cache import load
     try:
-        _, _, src = load(res)
+        _, _, src = load(make())
         return src
     except HTTPException as e:
         if e.status_code == 404:
@@ -42,13 +43,13 @@ def _warm(name: str, res) -> str:
 
 
 def line_results(line: str, period: dict, analysis: bool = True) -> list[tuple[str, object]]:
-    """The default page requests of one line (``period``: its ``available.default``)."""
+    """(name, result builder) of the default page requests of one line (``period``: its ``available.default``)."""
     from .api import line as L
     from .api.params import call, period as period_dep, query
-    p = call(period_dep, line=line, from_=period["from"], to=period["to"])
-    out = [(f"coverage {line}", L.coverage_result(p)), (f"versions {line}", L.versions_result(p))]
+    p = lambda: call(period_dep, line=line, from_=period["from"], to=period["to"])  # noqa: E731
+    out = [(f"coverage {line}", lambda: L.coverage_result(p())), (f"versions {line}", lambda: L.versions_result(p()))]
     if analysis:
-        out.append((f"analysis {line}", L.analysis_result(call(query, line=line, from_=period["from"], to=period["to"]))))
+        out.append((f"analysis {line}", lambda: L.analysis_result(call(query, line=line, from_=period["from"], to=period["to"]))))
     return out
 
 
@@ -72,7 +73,7 @@ def ranking_result():
 def run(lines: set[str] | None = None, workers: int = 2, analysis: bool = True) -> dict[str, int]:
     """Warm every default result; counts per outcome."""
     from .api.context import state
-    jobs = [("ranking default", ranking_result())]
+    jobs = [("ranking default", ranking_result)]
     jobs += [j for ln, d in default_lines(state.data, lines) for j in line_results(ln, d, analysis)]
     log.info("warming %d results with %d workers", len(jobs), workers)
     counts: dict[str, int] = {}

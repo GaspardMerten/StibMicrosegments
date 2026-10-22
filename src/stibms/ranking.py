@@ -40,7 +40,7 @@ from dataclasses import dataclass
 import polars as pl
 
 from . import ms, schedule
-from .data import ALGO_VERSION, Data, date_range, month_dates, months_between
+from .data import ALGO_VERSION, Data, by_line, date_range, month_dates, months_between
 from .linkcube import TICK_S
 from .linkcube import rel as cube_rel
 from .queries import check_days, check_dow, check_holidays, check_span, days_canonical, digest
@@ -106,7 +106,7 @@ def default_window(data: Data, n: int = DEFAULT_MONTHS) -> tuple[dt.date, dt.dat
     return month_dates(pick[0])[0], month_dates(pick[-1])[-1]
 
 
-def line_modes(data: Data) -> dict[str, dict]:
+def line_modes(data: Data, ttl: float = 3600) -> dict[str, dict]:
     """line -> {mode, color, text_color, name} from the latest GTFS feeds."""
     def f():
         from microsegments.report import ROUTE_TYPES
@@ -123,7 +123,7 @@ def line_modes(data: Data) -> dict[str, dict]:
                 out[ln] = {"mode": ROUTE_TYPES.get(int(rt)) if rt is not None else None, "color": r.get("route_color"),
                            "text_color": r.get("route_text_color"), "name": r.get("route_long_name")}
         return out
-    return data._cached("line_modes", f, ttl=3600)
+    return data._cached("line_modes", f, ttl=ttl)
 
 
 # ---------------------------------------------------------------------------------- inputs
@@ -159,8 +159,8 @@ def window_tables(data: Data, rq: RankQuery) -> list[tuple]:
         return list(ex.map(lambda m: month_tables(data, m), months))
 
 
-def _registry(data: Data) -> pl.DataFrame | None:
-    return data._cached("rank_registry", lambda: data.read_optional(f"derived/v{ALGO_VERSION}/linkkeys.parquet"), ttl=3600)
+def _registry(data: Data, ttl: float = 3600) -> pl.DataFrame | None:
+    return data._cached("rank_registry", lambda: data.read_optional(f"derived/v{ALGO_VERSION}/linkkeys.parquet"), ttl=ttl)
 
 
 # ---------------------------------------------------------------------------------- ranking
@@ -204,31 +204,31 @@ def _reasons(s: pl.DataFrame, links: list[pl.DataFrame]) -> pl.DataFrame:
         .otherwise(pl.lit("day")).alias("peak"))
 
 
-def per_line_links(data: Data, rq: RankQuery, info: dict) -> tuple[pl.DataFrame, int, int]:
+def per_line_links(data: Data, rq: RankQuery, info: dict) -> tuple[pl.DataFrame, list[str], int]:
     """Per (line, link_key): vehicle time lost per day (selected zones, running and stop parts),
     passages per day, reason. Returns (frame, lines with data, lines used after the mode filter)."""
     tables = window_tables(data, rq)
     frames, days, links = ([t[i] for t in tables if t[i] is not None and t[i].height] for i in range(3))
     if not frames:
-        return pl.DataFrame(), 0, 0
+        return pl.DataFrame(), [], 0
     keep_date = (pl.col("service_date").is_between(rq.first, rq.last)
                  & pl.col("service_date").dt.weekday().sub(1).is_in(sorted(set(rq.dow)))
                  & ~pl.col("service_date").is_in(sorted(rq.exclusions(data))))
     cube = pl.concat(frames, how="diagonal_relaxed").filter(keep_date)
     dd = pl.concat(days, how="diagonal_relaxed").filter(keep_date).unique()
-    n_lines = dd["line"].n_unique() if dd.height else 0
+    lines = dd["line"].cast(pl.Utf8).unique().to_list() if dd.height else []
     if rq.mode != "all":
         want = [ln for ln, v in info.items() if (v or {}).get("mode") == rq.mode]
         cube, dd = cube.filter(pl.col("line").is_in(want)), dd.filter(pl.col("line").is_in(want))
     if not cube.height:
-        return pl.DataFrame(), n_lines, 0
+        return pl.DataFrame(), lines, 0
     D = dd.group_by("line").agg(pl.len().alias("D"))
     num = [c for c in cube.columns if c[:2] in ("o_", "l_", "p_")]
     s = (cube.group_by("line", "link_key")
          .agg([pl.col(c).sum().cast(pl.Float64) for c in num] + [(pl.col("p_day") > 0).sum().alias("n_days")])
          .join(D, on="line", how="inner").filter(pl.col("n_days") >= MIN_DAYS))
     s = _reasons(_excess(s, rq.stops), links)
-    return s, n_lines, s["line"].n_unique()
+    return s, lines, s["line"].n_unique()
 
 
 def _geometry(data: Data, keys: pl.Series) -> dict[str, list]:
@@ -284,10 +284,20 @@ def _stretches(df: pl.DataFrame, n: int, geo: dict, days_per_year: int) -> tuple
     return [_stretch_row(i + 1, r, geo, days_per_year) for i, r in enumerate(g.iter_rows(named=True))], tot, n_loss
 
 
-def assemble(data: Data, rq: RankQuery, s: pl.DataFrame, top: int, info: dict, n_lines: int, n_used: int) -> dict:
+def current_lines(data: Data) -> set[str]:
+    """The lines of the latest GTFS feed (what ``/api/lines`` lists)."""
+    idx = data.gtfs_index()
+    return set(data.routes(idx["sha"][-1])["route_short_name"].cast(pl.Utf8).to_list()) if idx.height else set()
+
+
+def assemble(data: Data, rq: RankQuery, s: pl.DataFrame, top: int, info: dict, lines: list[str], n_used: int) -> dict:
+    """``lines``: the lines with data in the window; ``lines_gone``: those the latest feed (the
+    page's line list) no longer has (replacement services, withdrawn lines)."""
     from microsegments.report import title_name
     days_per_year = round(365.25 / 7 * len(set(rq.dow)))
-    base = {"query": rq.canonical(), "lines_total": n_lines, "lines_used": n_used, "days_per_year": days_per_year,
+    gone = sorted(set(lines) - current_lines(data), key=by_line)
+    base = {"query": rq.canonical(), "lines_total": len(lines), "lines_gone": gone, "lines_used": n_used,
+            "days_per_year": days_per_year,
             "algo": ALGO_VERSION, "rank_version": RANK_VERSION, "microsegments": ms.version(),
             "zones": "all" if rq.stops else "running", "reasons": REASONS}
     if not s.height:
@@ -324,9 +334,12 @@ def days_excluded(data: Data, rq: RankQuery) -> dict[str, int]:
 def compute(data: Data, rq: RankQuery, top: int = 50) -> dict:
     """The ranking of ``rq`` from the link cubes (well under a second for a few months)."""
     t0 = time.time()
-    info = line_modes(data)
-    s, n_lines, n_used = per_line_links(data, rq, info)
-    res = assemble(data, rq, s, top, info, n_lines, n_used)
+    # read again: the result is stored (90 days) under the cubes' stamp, and the derive that wrote
+    # those cubes may have added link keys (geometry) and lines after this process cached them
+    _registry(data, ttl=0)
+    info = line_modes(data, ttl=0)
+    s, lines, n_used = per_line_links(data, rq, info)
+    res = assemble(data, rq, s, top, info, lines, n_used)
     res["days_excluded"] = days_excluded(data, rq)
     res["status"] = "done"
     res["stamp"] = data.stamp(date_range(rq.first, rq.last))

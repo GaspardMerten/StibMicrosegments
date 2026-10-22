@@ -17,6 +17,9 @@ const LEGEND = [["ok", "retenu"], ["holiday", "férié"], ["school_holiday", "va
   ["user_period", "période exclue"], ["low_coverage", "flux incomplet"], ["line_absent", "ligne absente, sans données ou hors itinéraire"],
   ["not_derived", "en préparation"], ["not_ingested", "non collecté"], ["off", "jour non sélectionné"]];
 const colOf = k => COL[k] || COL.line_absent;
+// counted as one reason, "flux incomplet", as the package's period line does (missing, frozen, empty feed hours)
+const FEED = ["low_coverage", "frozen", "no_data"];
+const sumKey = k => FEED.includes(k) ? "low_coverage" : k;
 const big = v => v >= 1e6 ? `${nf(v / 1e6, 1)} million${v >= 2e6 ? "s" : ""}` : nf(v);
 let QUAL = null;      // {periods: [[label, days]], dows, reason: the run's days and exclusions, sum: the frame's summary or null}
 // the run's coverage (null: none); returns the periods' summaries ([] when none)
@@ -39,7 +42,7 @@ function covSummary(days, dows, reason, label, ps) {
   const ok = ps ? ps.days : sel.filter(d => cls(d) === "ok").length;
   const by = {}, seen = new Set();
   for (const d of days) seen.add(colOf(cls(d)));
-  for (const d of sel) if (cls(d) !== "ok") (by[cls(d)] ||= []).push(d);
+  for (const d of sel) if (cls(d) !== "ok") (by[sumKey(cls(d))] ||= []).push(d);
   const why = d => cls(d) === "off" ? "non sélectionné" : cls(d) === "ok" ? "retenu"
     : (d.holiday && cls(d) === "holiday" ? d.holiday : (REASONS[cls(d)] || [cls(d)])[0]);
   const strip = days.map(d => `<i style="background:${colOf(cls(d))}" title="${d.date} · ${DOW[d.dow]} · ${esc(why(d))}"></i>`).join("");

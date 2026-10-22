@@ -5,8 +5,10 @@
   var main = document.getElementById("ms-main");
   var q = new URLSearchParams(location.search);
   var api = (q.get("a") && q.get("b")) ? "/api/compare" : "/api/analysis";
-  // "rev" (code version) is not a parameter: it only keeps browsers from reusing a response of an older release
-  fetch(api + location.search + (location.search ? "&" : "?") + "rev=__REV__").then(function (r) {
+  // "rev" (code version) is not a parameter: it only keeps browsers from reusing a response of an older
+  // release; set, not added (the frame's own URL carries it already)
+  q.set("rev", "__REV__");
+  fetch(api + "?" + q).then(function (r) {
     // error bodies: FastAPI JSON (detail: a string, or a list of {msg}) or a proxy's HTML / text
     if (!r.ok) return r.text().then(function (t) {
       var m = r.status + " " + r.statusText;
