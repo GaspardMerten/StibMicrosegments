@@ -66,10 +66,6 @@ def _to_contract_fn():
     return None
 
 
-def have_contract() -> bool:
-    return _to_contract_fn() is not None
-
-
 def to_contract(analysis, net, hotspots=None, **kw) -> dict:
     """The JSON contract (microsegments.contract) of an Analysis; keyword arguments the installed
     ``to_contract`` does not take are dropped."""

@@ -5,109 +5,38 @@ length, phase, grid or stop zone is available without re-deriving.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
-import hashlib
-import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 
 import polars as pl
 
-from . import holidays as hol
 from . import ms, schedule, stopzones
-from .data import ALGO_VERSION, Data, date_range
+from .coverage import with_line_absence
+from .data import ALGO_VERSION, Data, date_range, months_of
+from .queries import CompareQuery, Query  # noqa: F401 - the analysis' queries, re-exported
 
 SOURCE = "STIB vehicle-distance et punctuality via MobilityTwin.Brussels"
+SHOW_HOTSPOTS = False     # the site does not show the package's hotspots (page option show_hotspots)
+# page options: the platform page has its own direction control (Sens) and no method section
+EMBED = {"dir_control": False, "method": False, "host_controls": True}
 
 
 class NotFound(LookupError):
     pass
 
 
-@dataclass(frozen=True)
-class Query:
-    line: str
-    first: dt.date
-    last: dt.date
-    dow: tuple[int, ...] = (0, 1, 2, 3, 4)
-    holidays: str = "exclude"            # "exclude" | "include"
-    seg: float = 30.0
-    phase: float = 0.0
-    grid: str = "stops"                  # "stops" (zones from the feed, see stibms.stopzones) | "equal" | "fixed"
-    stopzone: tuple[float, float] = (36.0, 38.0)   # before / after a stop; "stops": after = default exit mark
-    ref: tuple[int, int] = (20, 24)              # evening reference, 20:00-23:59
-    hours: tuple[int, int] = (5, 24)
-    B: int = 200                         # hotspot bootstrap draws
-    school: str = "include"              # STIB school-holiday timetable days (stibms.schedule)
-    reduced: str = "exclude"             # reduced-service days (strikes), left out by default
-    exclude: tuple = ()                  # user periods ((first, last), ...), see schedule.norm_periods
-
-    def __post_init__(self):
-        if self.first > self.last:
-            raise ValueError("from must be <= to")
-        if (self.last - self.first).days > 400:
-            raise ValueError("period longer than 400 days")
-        if not 5 <= self.seg <= 500:
-            raise ValueError("seg must be within 5..500 m")
-        if self.grid not in ("stops", "equal", "fixed"):
-            raise ValueError("grid must be stops, equal or fixed")
-        if self.holidays not in ("exclude", "include"):
-            raise ValueError("holidays must be exclude or include")
-        _check_days(self)
-        if not self.dow or any(d not in range(7) for d in self.dow):
-            raise ValueError("dow must be a subset of 0..6 (0 = Monday)")
-        if not (0 <= self.ref[0] < self.ref[1] <= 28):
-            raise ValueError("ref must be a:b hours with a < b")
-
-    def canonical(self) -> dict:
-        d = _days_canonical(self, asdict(self), self.first, self.last)
-        d["first"], d["last"] = self.first.isoformat(), self.last.isoformat()
-        d["dow"] = sorted(set(self.dow))
-        return d
-
-    def key(self, *extra) -> str:
-        blob = json.dumps([self.canonical(), ALGO_VERSION, ms.version(), *extra], sort_keys=True, default=str)
-        return hashlib.sha256(blob.encode()).hexdigest()[:32]
-
-
-# defaults of the day exclusions, the same on every endpoint (Query, CompareQuery, RankQuery, the API)
-DAY_DEFAULTS = {"school": "include", "reduced": "exclude"}
-
-
-def _check_days(q) -> None:
-    for k in ("school", "reduced"):
-        if getattr(q, k) not in schedule.CHOICES:
-            raise ValueError(f"{k} must be exclude or include")
-    for a, b in q.exclude:
-        if a > b:
-            raise ValueError("exclude: each period must start before it ends")
-    if len(q.exclude) > 50:
-        raise ValueError("exclude: 50 periods at most")
-
-
-def _days_canonical(q, d: dict, first: dt.date, last: dt.date) -> dict:
-    """The day-exclusion fields only when they differ from their defaults (``DAY_DEFAULTS``: one key
-    per choice, whether the default is spelt out or not), user periods clipped to the queried days
-    and merged."""
-    for k, v in DAY_DEFAULTS.items():
-        if d[k] == v:
-            del d[k]
-    ex = schedule.norm_periods(q.exclude, first, last)
-    if ex:
-        d["exclude"] = [[a.isoformat(), b.isoformat()] for a, b in ex]
-    else:
-        del d["exclude"]
-    return d
-
-
-def day_exclusions(data: Data, q, first: dt.date, last: dt.date) -> dict:
-    return schedule.exclusions(data, first, last, q.holidays, q.school, q.reduced, q.exclude)
+@contextlib.contextmanager
+def _timed(tm: dict, name: str):
+    t = time.time()
+    yield
+    tm[name] = round(time.time() - t, 3)
 
 
 @dataclass
 class Run:
     query: Query
-    dates: list[dt.date]
     holidays: dict[dt.date, tuple[str, str | None]]   # days left out on purpose: date -> (reason, label)
     net: object
     segments: pl.DataFrame
@@ -123,18 +52,18 @@ class Run:
     def hotspots(self) -> pl.DataFrame:
         if self._hotspots is None:
             from microsegments.hotspots import hotspots
-            t = time.time()
-            self._hotspots = hotspots(self.analysis, B=self.query.B, links=self.net.links)
-            self.timings["hotspots"] = round(time.time() - t, 3)
+            with _timed(self.timings, "hotspots"):
+                self._hotspots = hotspots(self.analysis, B=self.query.B, links=self.net.links)
         return self._hotspots
 
 
-def clamp_dates(data: Data, q: Query) -> list[dt.date]:
+def clamp(data: Data, first: dt.date, last: dt.date) -> list[dt.date]:
+    """The dates of [first, last] up to the last ingested date."""
     ing = data.ingested_dates()
     if not ing:
         return []
-    last = min(q.last, ing[-1])
-    return date_range(q.first, last) if q.first <= last else []
+    last = min(last, ing[-1])
+    return date_range(first, last) if first <= last else []
 
 
 def route_mode(data: Data, line: str, dates) -> str | None:
@@ -146,33 +75,6 @@ def route_mode(data: Data, line: str, dates) -> str | None:
     if not r.height or r["route_type"][0] is None:
         return None
     return ROUTE_TYPES.get(int(r["route_type"][0]))
-
-
-LINE_ABSENT = 4          # microsegments.schema.Flag.LINE_ABSENT
-TYPICAL_MIN_OBS = 20     # an hour "normally has" the line when its median count is at least this
-
-
-def line_absent(placed: pl.DataFrame, dates) -> pl.DataFrame:
-    """(service_date, hour) where the feed was polled but carried no row of the line while that
-    hour normally has it (median over the period >= TYPICAL_MIN_OBS). Partial source days exist
-    (2025-03-31: 15 lines of ~80 in the feed); feed-level coverage cannot see them."""
-    grid = pl.DataFrame({"service_date": list(dates)}, schema={"service_date": pl.Date}).join(
-        pl.DataFrame({"hour": pl.Series(range(4, 28), dtype=pl.Int8)}), how="cross")
-    n = placed.group_by("service_date", "hour").len().with_columns(pl.col("hour").cast(pl.Int8))
-    g = grid.join(n, on=["service_date", "hour"], how="left").with_columns(pl.col("len").fill_null(0))
-    typ = g.group_by("hour").agg(pl.col("len").median().alias("typ"))
-    return (g.join(typ, on="hour").filter((pl.col("len") == 0) & (pl.col("typ") >= TYPICAL_MIN_OBS))
-            .select("service_date", "hour"))
-
-
-def with_line_absence(cov: pl.DataFrame, placed: pl.DataFrame, dates) -> pl.DataFrame:
-    if not cov.height:
-        return cov
-    ab = line_absent(placed, dates).with_columns(pl.lit(True).alias("_ab"))
-    return (cov.join(ab, on=["service_date", "hour"], how="left")
-            .with_columns(pl.when(pl.col("_ab")).then(pl.col("flags") | LINE_ABSENT).otherwise(pl.col("flags"))
-                          .cast(cov.schema["flags"]).alias("flags"))
-            .drop("_ab"))
 
 
 @dataclass
@@ -188,7 +90,6 @@ class Loaded:
 
 
 def not_derived_months(data: Data, dates) -> list[str]:
-    from .data import months_of
     have = data.derived_months()
     return [m for m in months_of(dates) if m not in have]
 
@@ -204,7 +105,8 @@ def load(data: Data, line: str, dates: list[dt.date], label: str = "cette pério
             raise NotFound(f"données en cours de préparation pour {label} (mois {', '.join(pending)} pas encore calculés)")
         raise NotFound(f"aucun signalement de la ligne {line} pour {label}")
     passages = data.passages(line, dates)
-    cov = with_line_absence(data.coverage(dates), placed, dates)
+    ing = set(data.ingested_dates())     # gaps in the collection are no hours without the line
+    cov = with_line_absence(data.coverage(dates), placed, [d for d in dates if d in ing])
     net = data.network(line, dates)
     mk = exit_marks(data, line, dates, placed)
     placed = stopzones.prepare(placed, net, mk)
@@ -214,7 +116,6 @@ def load(data: Data, line: str, dates: list[dt.date], label: str = "cette pério
 def exit_marks(data: Data, line: str, dates, placed: pl.DataFrame) -> pl.DataFrame:
     """The line's exit marks over the months of ``dates`` (written with the link cubes), learned from
     ``placed`` for a month without a marks file (not yet derived)."""
-    from .data import months_of
     from .linkcube import rel
     months = months_of(dates)
     got = data.read_many([rel(m, "marks") for m in months])
@@ -226,28 +127,31 @@ def exit_marks(data: Data, line: str, dates, placed: pl.DataFrame) -> pl.DataFra
     return pl.concat(parts, how="vertical_relaxed").unique() if parts else pl.DataFrame(schema=stopzones.MARKS_SCHEMA)
 
 
+def _stop_zone(q) -> tuple[float, float]:
+    """Grid "stops": the zones follow the feed, APPROACH_M before, the learned exit mark after."""
+    return (stopzones.APPROACH_M, stopzones.default_head()) if q.grid == "stops" else q.stopzone
+
+
 def _segments(ld: Loaded, q) -> pl.DataFrame:
     from microsegments.segments import segment
     uids = sorted(set(ld.placed["pattern_uid"].drop_nulls().unique().to_list())
                   | set(ld.net.pattern_days.filter(pl.col("is_main"))["pattern_uid"].unique().to_list()))
-    if q.grid == "stops":   # the zones follow the feed: APPROACH_M before, the learned exit mark after
-        return segment(ld.net, q.seg, q.phase, "stops", (stopzones.APPROACH_M, stopzones.default_head()),
-                       patterns=uids, zones=ld.zones)
-    return segment(ld.net, q.seg, q.phase, q.grid, q.stopzone, patterns=uids)
+    return segment(ld.net, q.seg, q.phase, q.grid, _stop_zone(q), patterns=uids,
+                   zones=ld.zones if q.grid == "stops" else None)
 
 
 def _params(q):
     from microsegments.config import Params
-    sz = (stopzones.APPROACH_M, stopzones.default_head()) if q.grid == "stops" else q.stopzone
-    return Params(segment_m=q.seg, phase_m=q.phase, grid=q.grid, stop_zone=sz, reference_hours=q.ref,
+    return Params(segment_m=q.seg, phase_m=q.phase, grid=q.grid, stop_zone=_stop_zone(q), reference_hours=q.ref,
                   tick_from_coverage=True)
 
 
-def _analyse(cube, ld: Loaded, segs, q, first: dt.date, last: dt.date, dates: list[dt.date], data: Data | None = None):
-    """Analysis of [first, last]; returns it with the days left out on purpose (date -> (reason, label))."""
+def _analyse(data: Data, cube, ld: Loaded, segs, q, dates: list[dt.date]):
+    """Analysis of ``dates`` (a run of days); returns it with the days left out on purpose (date -> (reason, label))."""
     from microsegments.config import Quality, Select
     from microsegments.metrics import analyse
-    hd = day_exclusions(data, q, first, last)
+    first, last = dates[0], dates[-1]
+    hd = schedule.exclusions(data, first, last, q.holidays, q.school, q.reduced, q.exclude)
     present = set(dates)
     select = Select(route=q.line, dates=f"{first}..{last}", weekdays=sorted(set(q.dow)),
                     exclude_dates=[d.isoformat() for d in sorted(hd) if d.weekday() in q.dow and d in present],
@@ -257,24 +161,19 @@ def _analyse(cube, ld: Loaded, segs, q, first: dt.date, last: dt.date, dates: li
                    _params(q), Quality()), hd
 
 
-def run(data: Data, q: Query, with_mode: bool = True) -> Run:
+def run(data: Data, q: Query) -> Run:
     from microsegments.aggregate import count
-
-    dates = clamp_dates(data, q)
+    dates = clamp(data, q.first, q.last)
     ld = load(data, q.line, dates)
     tm = dict(ld.timings)
-    t = time.time()
-    segs = _segments(ld, q)
-    tm["segment"] = round(time.time() - t, 3)
-    t = time.time()
-    cube = count(ld.placed, segs, _params(q).tick_s)
-    tm["count"] = round(time.time() - t, 3)
-    t = time.time()
-    an, hd = _analyse(cube, ld, segs, q, dates[0], dates[-1], dates, data)
-    tm["analyse"] = round(time.time() - t, 3)
-    return Run(query=q, dates=dates, holidays=hd, net=ld.net, segments=segs, analysis=an, coverage=ld.coverage,
-               placed=ld.placed, passages=ld.passages, timings=tm, zones=ld.zones,
-               mode=route_mode(data, q.line, dates) if with_mode else None)
+    with _timed(tm, "segment"):
+        segs = _segments(ld, q)
+    with _timed(tm, "count"):
+        cube = count(ld.placed, segs, _params(q).tick_s)
+    with _timed(tm, "analyse"):
+        an, hd = _analyse(data, cube, ld, segs, q, dates)
+    return Run(query=q, holidays=hd, net=ld.net, segments=segs, analysis=an, coverage=ld.coverage,
+               placed=ld.placed, passages=ld.passages, timings=tm, zones=ld.zones, mode=route_mode(data, q.line, dates))
 
 
 def _relabel(excluded: list[dict], days: dict) -> None:
@@ -294,85 +193,48 @@ def _relabel_inc(cv: dict, days: dict) -> None:
                      for d, v in zip(cv.get("dates", []), cv["inc"])]
 
 
-SHOW_HOTSPOTS = False     # the site does not show the package's hotspots (page option show_hotspots)
-# page options: the platform page has its own direction control (Sens) and no method section
-EMBED = {"dir_control": False, "method": False, "host_controls": True}
-
-
-def contract(r: Run) -> dict:
-    t = time.time()
-    hs = r.hotspots() if SHOW_HOTSPOTS else None
-    q = r.query
-    out = ms.to_contract(r.analysis, r.net, hotspots=hs, line=q.line, mode=r.mode, source=SOURCE,
+def _page(an, net, q, mode: str | None, hs, days: dict, compare: dict | None = None) -> dict:
+    """The contract of ``an`` with the site's page options; ``days``: the days left out on purpose."""
+    out = ms.to_contract(an, net, hotspots=hs, line=q.line, mode=mode, source=SOURCE,
                          title=f"Ligne {q.line}", names="title")
+    if compare is not None:
+        out["compare"] = compare
     out["show_hotspots"] = SHOW_HOTSPOTS
     out.update(EMBED)
     # holidays, school holidays, ... are excluded on purpose: say so instead of the generic "excluded"
-    _relabel(out.get("period", {}).get("excluded", []), r.holidays)
-    _relabel_inc(out.get("coverage", {}), r.holidays)
+    _relabel(out.get("period", {}).get("excluded", []), days)
+    _relabel_inc(out.get("coverage", {}), days)
     out["tiles"] = True
     out["query"] = q.canonical()
     out["algo"] = ALGO_VERSION
     out["microsegments"] = ms.version()
-    r.timings["contract"] = round(time.time() - t, 3)
+    return out
+
+
+def contract(r: Run) -> dict:
+    with _timed(r.timings, "contract"):
+        hs = r.hotspots() if SHOW_HOTSPOTS else None
+        out = _page(r.analysis, r.net, r.query, r.mode, hs, r.holidays)
     return out
 
 
 # ---------------------------------------------------------------------------------- two periods
-@dataclass(frozen=True)
-class CompareQuery:
-    line: str
-    a: tuple[dt.date, dt.date]           # period A (before)
-    b: tuple[dt.date, dt.date]           # period B (after)
-    dow: tuple[int, ...] = (0, 1, 2, 3, 4)
-    holidays: str = "exclude"
-    seg: float = 30.0
-    phase: float = 0.0
-    grid: str = "stops"
-    stopzone: tuple[float, float] = (36.0, 38.0)
-    ref: tuple[int, int] = (20, 24)              # evening reference, 20:00-23:59
-    hours: tuple[int, int] = (5, 24)
-    B: int = 100                         # bootstrap draws (difference CI and period-B hotspots)
-    school: str = "include"
-    reduced: str = "exclude"
-    exclude: tuple = ()                  # user periods, applied to both A and B
-
-    def __post_init__(self):
-        for name, (x, y) in (("a", self.a), ("b", self.b)):
-            if x > y:
-                raise ValueError(f"{name}: start must be <= end")
-            if (y - x).days > 400:
-                raise ValueError(f"{name}: period longer than 400 days")
-        # the single-period checks (seg, grid, dow, ...)
-        Query(self.line, self.b[0], self.b[1], self.dow, self.holidays, self.seg, self.phase, self.grid,
-              self.stopzone, self.ref, school=self.school, reduced=self.reduced, exclude=self.exclude)
-
-    @property
-    def first(self) -> dt.date:
-        return min(self.a[0], self.b[0])
-
-    @property
-    def last(self) -> dt.date:
-        return max(self.a[1], self.b[1])
-
-    def canonical(self) -> dict:
-        d = _days_canonical(self, asdict(self), self.first, self.last)
-        d["a"] = [self.a[0].isoformat(), self.a[1].isoformat()]
-        d["b"] = [self.b[0].isoformat(), self.b[1].isoformat()]
-        d["dow"] = sorted(set(self.dow))
-        return d
-
-    def key(self, *extra) -> str:
-        blob = json.dumps([self.canonical(), ALGO_VERSION, ms.version(), *extra], sort_keys=True, default=str)
-        return hashlib.sha256(blob.encode()).hexdigest()[:32]
+def _compare_dates(data: Data, cq: CompareQuery) -> tuple[list[dt.date], list[dt.date]]:
+    da, db = clamp(data, *cq.a), clamp(data, *cq.b)
+    if not da:
+        raise NotFound("période A : aucune donnée ingérée")
+    if not db:
+        raise NotFound("période B : aucune donnée ingérée")
+    return da, db
 
 
-def _clamp(data: Data, a: dt.date, b: dt.date) -> list[dt.date]:
-    ing = data.ingested_dates()
-    if not ing:
-        return []
-    last = min(b, ing[-1])
-    return date_range(a, last) if a <= last else []
+def _check_seen(data: Data, cq: CompareQuery, ld: Loaded, da: list[dt.date], db: list[dt.date]) -> None:
+    seen = set(ld.placed["service_date"].unique().to_list())
+    for lab, ds in (("période A", da), ("période B", db)):
+        if not seen & set(ds):
+            pending = not_derived_months(data, ds)
+            raise NotFound(f"{lab} : " + (f"données en cours de préparation (mois {', '.join(pending)} pas encore calculés)"
+                                          if pending else f"aucun signalement de la ligne {cq.line}"))
 
 
 def run_compare(data: Data, cq: CompareQuery) -> dict:
@@ -385,57 +247,32 @@ def run_compare(data: Data, cq: CompareQuery) -> dict:
     from microsegments.hotspots import hotspot_status, hotspots
     from microsegments.report import name_map
 
-    tm: dict[str, float] = {}
-    da, db = _clamp(data, *cq.a), _clamp(data, *cq.b)
-    if not da:
-        raise NotFound("période A : aucune donnée ingérée")
-    if not db:
-        raise NotFound("période B : aucune donnée ingérée")
-    union = sorted(set(da) | set(db))
-    ld = load(data, cq.line, union, "ces périodes")
-    tm.update(ld.timings)
-    seen = set(ld.placed["service_date"].unique().to_list())
-    for lab, ds in (("période A", da), ("période B", db)):
-        if not seen & set(ds):
-            pending = not_derived_months(data, ds)
-            raise NotFound(f"{lab} : " + (f"données en cours de préparation (mois {', '.join(pending)} pas encore calculés)"
-                                          if pending else f"aucun signalement de la ligne {cq.line}"))
-    t = time.time()
-    segs = _segments(ld, cq)
-    cube = count(ld.placed, segs, _params(cq).tick_s)
-    tm["segment_count"] = round(time.time() - t, 3)
-    t = time.time()
-    an_a, hd_a = _analyse(cube, ld, segs, cq, da[0], da[-1], da, data)
-    an_b, hd_b = _analyse(cube, ld, segs, cq, db[0], db[-1], db, data)
-    tm["analyse"] = round(time.time() - t, 3)
+    da, db = _compare_dates(data, cq)
+    ld = load(data, cq.line, sorted(set(da) | set(db)), "ces périodes")
+    tm = dict(ld.timings)
+    _check_seen(data, cq, ld, da, db)
+    with _timed(tm, "segment_count"):
+        segs = _segments(ld, cq)
+        cube = count(ld.placed, segs, _params(cq).tick_s)
+    with _timed(tm, "analyse"):
+        an_a, hd_a = _analyse(data, cube, ld, segs, cq, da)
+        an_b, hd_b = _analyse(data, cube, ld, segs, cq, db)
     if not an_a.days or not an_b.days:
         which = "A" if not an_a.days else "B"
         raise NotFound(f"période {which} : aucun jour utilisable (couverture insuffisante ou ligne absente)")
-    t = time.time()
-    cmp = compare(an_a, an_b, B=cq.B, links=ld.net.links)
-    tm["compare"] = round(time.time() - t, 3)
-    t = time.time()
-    hs = hotspots(an_b, B=cq.B, links=ld.net.links) if SHOW_HOTSPOTS and hotspot_status(an_b)[0] else None
-    tm["hotspots"] = round(time.time() - t, 3)
-    mode = route_mode(data, cq.line, db)
-    names = name_map("title", ld.net)
-    out = ms.to_contract(an_b, ld.net, hotspots=hs, line=cq.line, mode=mode, source=SOURCE,
-                         title=f"Ligne {cq.line}", names="title")
-    out["compare"] = cmp.to_contract(names)
-    out["show_hotspots"] = SHOW_HOTSPOTS
-    out.update(EMBED)
-    _relabel(out.get("period", {}).get("excluded", []), hd_b)
+    with _timed(tm, "compare"):
+        cmp = compare(an_a, an_b, B=cq.B, links=ld.net.links)
+    with _timed(tm, "hotspots"):
+        hs = hotspots(an_b, B=cq.B, links=ld.net.links) if SHOW_HOTSPOTS and hotspot_status(an_b)[0] else None
+    out = _page(an_b, ld.net, cq, route_mode(data, cq.line, db), hs, hd_b,
+                compare=cmp.to_contract(name_map("title", ld.net)))
     _relabel(out["compare"]["a"]["excluded"], hd_a)
     _relabel(out["compare"]["b"]["excluded"], hd_b)
-    _relabel_inc(out.get("coverage", {}), hd_b)
-    out["tiles"] = True
-    out["query"] = cq.canonical()
-    out["algo"] = ALGO_VERSION
-    out["microsegments"] = ms.version()
     out["timings"] = tm
     return out
 
 
+# ---------------------------------------------------------------------------------- downloads, tuning
 def result_table(r: Run) -> pl.DataFrame:
     """RESULT rows of the analysis with readable stop names, for .csv / .parquet downloads."""
     res = r.analysis.result
@@ -444,217 +281,21 @@ def result_table(r: Run) -> pl.DataFrame:
     return out.with_columns(pl.lit(r.query.line).alias("line"))
 
 
-def coverage_days(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]:
-    """Per date: feed coverage over 6-21 h, hours below 80 %, the line's counted observations,
-    holiday name, STIB service category (``schedule``: school_holiday | reduced_service | null). ``status``: ok | low_coverage | no_data | line_absent | not_derived (ingested, month
-    not derived yet) | not_ingested."""
-    from microsegments.config import Quality
-    qual = Quality()
-    ing = set(data.ingested_dates())
-    dates = date_range(first, last)
-    pl_ = data.placed(line, dates)
-    cov = data.coverage(dates)
-    if pl_ is not None:
-        cov = with_line_absence(cov, pl_, [d for d in dates if d in ing])
-    per: dict[dt.date, tuple[float, int]] = {}
-    if cov.height:
-        g = (cov.filter(pl.col("hour").is_between(6, 20))
-             .group_by("service_date")
-             .agg(pl.col("coverage").mean().alias("c"),
-                  ((pl.col("coverage") < qual.min_hour_coverage) | ((pl.col("flags") & 3) != 0)).sum().alias("bad"),
-                  ((pl.col("flags") & LINE_ABSENT) != 0).sum().alias("absent")))
-        per = {r[0]: (float(r[1]), int(r[2]), int(r[3])) for r in g.iter_rows()}
-    obs: dict[dt.date, int] = {}
-    if pl_ is not None:
-        obs = dict(pl_.group_by("service_date").len().iter_rows())
-    hd = hol.between(first, last)
-    try:
-        cats = schedule.categories(data, first, last)
-    except Exception:  # noqa: BLE001 - the coverage answers without the categories
-        cats = {}
-    have = data.derived_months()
-    out = []
-    for d in dates:
-        c, bad, absent = per.get(d, (None, None, None))
-        if d not in ing:
-            status = "not_ingested"
-        elif f"{d.year:04d}-{d.month:02d}" not in have:
-            status = "not_derived"
-        elif c is None:
-            status = "no_data"
-        elif bad / 15 > 1 - qual.min_day_coverage + 1e-9:
-            status = "low_coverage"
-        elif not obs.get(d) or (bad + absent) / 15 > 1 - qual.min_day_coverage + 1e-9:
-            status = "line_absent"
-        else:
-            status = "ok"
-        out.append({"date": d.isoformat(), "dow": d.weekday(), "coverage": None if c is None else round(c, 3),
-                    "hours_bad": bad, "hours_line_absent": absent, "obs": int(obs.get(d, 0)), "holiday": hd.get(d),
-                    "service": cats.get(d), "status": status})
-    return out
+def tune(r: Run, lengths: tuple[float, ...], B: int) -> dict:
+    """Segment-length criteria of the run's analysis (``microsegments.tune.segment_length``)."""
+    from microsegments.report import frame_records
+    from microsegments.segments import segment
+    from microsegments.tune import segment_length
+    q, an, net = r.query, r.analysis, r.net
+    t = time.time()
+    uids = sorted(r.segments["pattern_uid"].unique().to_list())
 
-
-# A version with the reference's stops differs by its track only. GTFS shape edits move a link by a
-# few metres to a few tens; a detour moves it by hundreds. Local data (2024-10, 2025-02..05, all lines,
-# incl. 92 in 2025-05 and 7 in 2025-02..05, which have none): shape edits and small platform moves stay
-# under 45 m per link, or 150 m when the next link takes it back (73 International -> Ceria -123 m),
-# and under 1.3 % in total; detours are 254-415 m on one link (54 Ma Campagne -> Trinité +415 m,
-# 58 Vilvoorde Station -> Blokken -261 m). A temporary
-# stop moved along the route lengthens one link and shortens the next by as much (75 Westland Shopping
-# 250 m): runs of changed links are summed, so that is a moved stop, not a detour.
-DETOUR_MIN_M = 150.0      # a run of links is a detour when its length changes by more than ...
-DETOUR_SHARE = 0.20       # ... max(150 m, 20 % of its reference length)
-DETOUR_TOTAL = 0.05       # or the whole route by more than 5 %
-DETOUR_RUN_M = 30.0       # links that changed by more than this form a run (below: shape noise)
-
-
-def _track_changes(ref_len: list[float], len_: list[float], names: list[str]) -> list[dict]:
-    """Detours and moved stops of a version with the reference's stops, from the per-link lengths
-    (``names``: the stops, one more than the links). Each: kind (detour | moved_stop), from, to (the
-    stops around the run), stop (moved_stop), delta_m (length change of the run, or the stop's shift)."""
-    d = [b - a for a, b in zip(ref_len, len_)]
-    out, i, n = [], 0, len(d)
-    big = lambda k, ref: abs(k) > max(DETOUR_MIN_M, DETOUR_SHARE * ref)   # noqa: E731
-    while i < n:
-        if abs(d[i]) <= DETOUR_RUN_M:
-            i += 1
-            continue
-        j = i
-        while j + 1 < n and abs(d[j + 1]) > DETOUR_RUN_M:
-            j += 1
-        net, ref = sum(d[i:j + 1]), sum(ref_len[i:j + 1])
-        if big(net, ref):
-            out.append({"kind": "detour", "from": names[i], "to": names[j + 1], "delta_m": round(net)})
-        else:
-            k = max(range(i, j + 1), key=lambda x: abs(d[x]))
-            if big(d[k], ref_len[k]) and k < j:       # one link longer, the next shorter: the stop moved
-                out.append({"kind": "moved_stop", "stop": names[k + 1], "from": names[i], "to": names[j + 1],
-                            "delta_m": round(abs(d[k]))})
-        i = j + 1
-    tot = sum(len_) - sum(ref_len)
-    if not any(x["kind"] == "detour" for x in out) and abs(tot) > DETOUR_TOTAL * sum(ref_len):
-        i = max(range(n), key=lambda x: abs(d[x]))
-        out.append({"kind": "detour", "from": names[i], "to": names[i + 1], "delta_m": round(tot)})
-    return out
-
-
-def _group_versions(runs: list[dict]) -> list[dict]:
-    """One route per direction and stop sequence (and, with the reference's stops, per set of detours /
-    moved stops), from the main-pattern runs of ``Network.versions`` (``runs``: in date order per
-    direction, each with ``first``, ``last``, ``n_days``, ``stops`` and the per-link ``_len``). Feed
-    changes and shape edits give several pattern_uids, and a route that comes back gives several runs:
-    they are one route here. ``periods``: its runs, those next to each other merged (runs follow
-    each other over the days with data, so a gap of days without data does not split a period),
-    each with first, last, n_days; ``first`` / ``last`` / ``n_days`` over all of them. The reference
-    is the route of the run with the most stops, the latest on a tie: ``ref`` true on it, ``removed`` /
-    ``added`` stop names elsewhere, and on a route with the reference's stops its ``detours`` (see
-    :func:`_track_changes`; a shape edit has none, so it is the reference)."""
-    out = []
-    for dr in sorted({r["direction_id"] for r in runs}):
-        rs = sorted((r for r in runs if r["direction_id"] == dr), key=lambda r: r["first"])
-        ref = max(rs, key=lambda r: (r["n_stops"], r["last"], r["first"]))
-        groups: dict[tuple, dict] = {}
-        prev = None
-        for r in rs:
-            same = r["stops"] == ref["stops"] and len(r["_len"]) == len(ref["_len"]) == len(r["stops"]) - 1
-            det = _track_changes(ref["_len"], r["_len"], r["stops"]) if same and r is not ref else []
-            key = (tuple(r["stops"]), tuple((t["kind"], t["from"], t["to"], t.get("stop")) for t in det))
-            g = groups.get(key)
-            if g is None:
-                g = groups[key] = {"direction_id": dr, "pattern_uid": r["pattern_uid"], "from": r["from"], "to": r["to"],
-                                   "n_stops": r["n_stops"], "stops": r["stops"], "detours": det, "periods": [], "_best": 0}
-            if key == prev:
-                p = g["periods"][-1]
-                p["last"], p["n_days"] = r["last"], p["n_days"] + r["n_days"]
-            else:
-                g["periods"].append({"first": r["first"], "last": r["last"], "n_days": r["n_days"]})
-            if r["n_days"] > g["_best"]:          # the pattern and detour lengths of its longest run
-                g.update(pattern_uid=r["pattern_uid"], detours=det, _best=r["n_days"])
-            prev = key
-        ref_key = (tuple(ref["stops"]), ())
-        for key, g in groups.items():
-            del g["_best"]
-            g["ref"] = key == ref_key
-            have, refs = set(g["stops"]), set(ref["stops"])
-            g["removed"] = [] if g["ref"] else [n for n in ref["stops"] if n not in have]
-            g["added"] = [] if g["ref"] else [n for n in g["stops"] if n not in refs]
-            g["first"], g["last"] = g["periods"][0]["first"], g["periods"][-1]["last"]
-            g["n_days"] = sum(p["n_days"] for p in g["periods"])
-            out.append(g)
-    return out
-
-
-# A route that already ran when the period starts may itself be a lasting change made before it (55,
-# 2025-05-21: Da Vinci -> Rogier cut back to Tilleul -> Rogier); inside the period it is the reference
-# and shows nothing. The main-pattern runs of the year before tell when it started and what ran before.
-LOOKBACK_DAYS = 365
-LASTING_MIN_DAYS = 7      # another route for fewer days (works, one-day diversions) does not end it
-
-
-def _lasting_change(back: list[dict], ref: dict) -> dict | None:
-    """The change that made ``ref`` (a :func:`_group_versions` reference, running when the period
-    starts) the route, from ``back`` (main-pattern runs before the period, ``_runs`` format, one
-    direction): walking back over the runs of its stops and over shorter interruptions, the first
-    run of another route of at least ``LASTING_MIN_DAYS`` days is the route before. None when there
-    is none in ``back`` or it serves the same stops. Else: since (first day of ``ref``'s stops after
-    it), and the route before (from, to, n_stops, stops, last) with ``removed`` / ``added`` stop names."""
-    since, before = None, None
-    for r in sorted(back, key=lambda r: r["first"], reverse=True):
-        if r["stops"] == ref["stops"]:
-            since = r["first"]
-        elif r["n_days"] >= LASTING_MIN_DAYS:
-            before = r
-            break
-    if before is None:
-        return None
-    have, prev = set(ref["stops"]), set(before["stops"])
-    removed = [n for n in before["stops"] if n not in have]
-    added = [n for n in ref["stops"] if n not in prev]
-    if not removed and not added:
-        return None
-    return {"since": since or ref["first"],
-            "before": {"from": before["from"], "to": before["to"], "n_stops": before["n_stops"],
-                       "stops": before["stops"], "last": before["last"]},
-            "removed": removed, "added": added}
-
-
-def _runs(net) -> list[dict]:
-    from microsegments.report import title_name
-    v = net.versions().join(net.patterns.select("pattern_uid", "stop_names"), on="pattern_uid", how="left")
-    runs = []
-    for r in v.iter_rows(named=True):
-        names = r["stop_names"] or []
-        runs.append({"direction_id": r["direction_id"], "pattern_uid": r["pattern_uid"],
-                     "first": r["first"].isoformat(), "last": r["last"].isoformat(), "n_days": r["n_days"],
-                     "from": names[0] if names else None, "to": names[-1] if names else None, "n_stops": len(names),
-                     "stops": [title_name(n) for n in names], "_len": net.links_of(r["pattern_uid"])["len_m"].to_list()})
-    return runs
-
-
-def versions(data: Data, line: str, first: dt.date, last: dt.date) -> list[dict]:
-    """Routes run as main pattern per direction over the period, with their stop names, the periods
-    they ran and what changes against the direction's reference (see :func:`_group_versions`). A
-    reference already running on the period's first day carries ``lasting`` when it replaced another
-    route in the ``LOOKBACK_DAYS`` before (see :func:`_lasting_change`), else ``lasting`` is None."""
-    ingested = set(data.ingested_dates())
-    dates = [d for d in date_range(first, last) if d in ingested]
-    if not dates:
-        return []
-    net = data.network(line, dates)
-    if not net.pattern_days.height:
-        return []
-    runs = _runs(net)
-    out = _group_versions(runs)
-    back_dates = [d for d in date_range(first - dt.timedelta(days=LOOKBACK_DAYS), first - dt.timedelta(days=1))
-                  if d in ingested]
-    back: list[dict] = []
-    if back_dates:
-        bnet = data.network(line, back_dates)
-        if bnet.pattern_days.height:
-            back = _runs(bnet)
-    for g in out:
-        g["lasting"] = None
-        start = min(r["first"] for r in runs if r["direction_id"] == g["direction_id"])
-        if g["ref"] and g["first"] == start:
-            g["lasting"] = _lasting_change([r for r in back if r["direction_id"] == g["direction_id"]], g)
-    return out
+    def seg_fn(L, phase=0.0, stop_zone=an.params.stop_zone):
+        return segment(net, L, phase, q.grid, stop_zone, patterns=uids, geometry=False,
+                       zones=r.zones if q.grid == "stops" else None)
+    res = segment_length(r.placed, seg_fn, lengths, coverage=r.coverage if r.coverage.height else None,
+                         passages=r.passages, pattern_days=net.pattern_days, select=an.select,
+                         params=an.params, quality=an.quality, B=B)
+    return {"line": q.line, "query": q.canonical(), "lengths": list(lengths), "B": B,
+            "recommended": res.recommended, "rule": res.rule, "table": frame_records(res.table),
+            "seconds": round(time.time() - t, 1)}

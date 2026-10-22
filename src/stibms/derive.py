@@ -40,48 +40,60 @@ from pathlib import Path
 import polars as pl
 
 from . import ms
-from .data import ALGO_VERSION, PLACED_COLS, Data, derived, month_dates, month_key
+from .data import ALGO_VERSION, PLACED_COLS, Data, by_line, derived, month_key, months_between
 from .servicedays import parse_date
 
 __all__ = ["ALGO_VERSION", "derive_month", "main"]
 log = logging.getLogger("stibms.derive")
 
 
+def _now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
 # ---------------------------------------------------------------------------------- patterns
+def _patterns_current(data: Data, base: str, dates: list[dt.date]) -> bool:
+    if not data.store.exists(f"{base}/_SUCCESS"):
+        return False
+    have = set(data.store.read_json(f"{base}/_SUCCESS").get("dates", []))
+    return {d.isoformat() for d in dates} <= have
+
+
+def _feed_networks(data: Data, sha: str, dates: list[dt.date], registry) -> tuple[dict, list[str], dict]:
+    """(tables, lines, failed): the network tables of every line of feed ``sha`` on ``dates``."""
+    from microsegments.network import GtfsSource, build_network
+    src = GtfsSource(data.feed_dir(sha))
+    lines = sorted(set(data.routes(sha)["route_short_name"].drop_nulls().cast(pl.Utf8).to_list()))
+    out = {n: [] for n in ("patterns", "links", "stops", "pattern_days")}
+    failed = {}
+    for line in lines:
+        try:
+            net = build_network(src, line, dates, registry=registry)
+        except Exception as e:  # one broken route must not block the feed
+            failed[line] = repr(e)[:200]
+            continue
+        if not net.patterns.height:
+            continue
+        lit = pl.lit(line, pl.Utf8).alias("line")
+        out["patterns"].append(net.patterns.with_columns(lit))
+        out["links"].append(net.links)
+        out["stops"].append(net.stops.with_columns(lit))
+        out["pattern_days"].append(net.pattern_days.with_columns(lit))
+    return out, lines, failed
+
+
 def ensure_patterns(data: Data, shas: list[str], registry, force: bool = False) -> dict:
     """(Re)build the per-feed network tables of ``shas`` (all lines). Returns timing / counts."""
-    from microsegments.network import GtfsSource, build_network
-
-    idx = data.gtfs_index()
-    g = idx.group_by("sha").agg(pl.col("service_date").min())
+    g = data.gtfs_index().group_by("sha").agg(pl.col("service_date").min())
     first = dict(zip(g["sha"].to_list(), g["service_date"].to_list()))
     report = {}
     for sha in sorted(set(shas), key=lambda s: first.get(s, dt.date.max)):
         dates = data.sha_dates(sha)
         base = derived(f"patterns/sha={sha}")
-        if not force and data.store.exists(f"{base}/_SUCCESS"):
-            have = set(data.store.read_json(f"{base}/_SUCCESS").get("dates", []))
-            if {d.isoformat() for d in dates} <= have:
-                continue
+        if not force and _patterns_current(data, base, dates):
+            continue
         t0 = time.time()
-        src = GtfsSource(data.feed_dir(sha))
-        routes = data.routes(sha)
-        lines = sorted(set(routes["route_short_name"].drop_nulls().cast(pl.Utf8).to_list()))
-        out = {n: [] for n in ("patterns", "links", "stops", "pattern_days")}
-        failed = {}
-        for line in lines:
-            try:
-                net = build_network(src, line, dates, registry=registry)
-            except Exception as e:  # one broken route must not block the feed
-                failed[line] = repr(e)[:200]
-                continue
-            if not net.patterns.height:
-                continue
-            lit = pl.lit(line, pl.Utf8).alias("line")
-            out["patterns"].append(net.patterns.with_columns(lit))
-            out["links"].append(net.links)
-            out["stops"].append(net.stops.with_columns(lit))
-            out["pattern_days"].append(net.pattern_days.with_columns(lit))
+        out, lines, failed = _feed_networks(data, sha, dates, registry)
         for n, frames in out.items():
             df = pl.concat(frames, how="vertical_relaxed") if frames else pl.DataFrame()
             if n == "links":
@@ -89,8 +101,7 @@ def ensure_patterns(data: Data, shas: list[str], registry, force: bool = False) 
             data.store.write_parquet(f"{base}/{n}.parquet", df)
         data.store.write_json(f"{base}/_SUCCESS", {
             "sha": sha, "dates": [d.isoformat() for d in dates], "lines": len(lines), "failed": failed,
-            "algo": ALGO_VERSION, "microsegments": ms.version(),
-            "written_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+            "algo": ALGO_VERSION, "microsegments": ms.version(), "written_at": _now(),
             "seconds": round(time.time() - t0, 1)})
         report[sha[:12]] = {"dates": len(dates), "lines": len(lines), "failed": len(failed),
                             "seconds": round(time.time() - t0, 1)}
@@ -110,6 +121,29 @@ def write_coverage(data: Data, month: str, dates: list[dt.date]) -> pl.DataFrame
 
 
 # ---------------------------------------------------------------------------------- per line
+def _split(df: pl.DataFrame, col: str, d: dt.date, dst: Path, seen: set[str] | None = None) -> None:
+    """dst/line=X/D.parquet for each value X of ``col``."""
+    for (line,), g in df.group_by(col):
+        if line is None:
+            continue
+        p = dst / f"line={line}"
+        p.mkdir(parents=True, exist_ok=True)
+        g.write_parquet(p / f"{d}.parquet", compression="lz4")
+        if seen is not None:
+            seen.add(str(line))
+
+
+def split_punctuality(data: Data, d: dt.date, dst: Path, lines: set[str] | None = None) -> None:
+    """dst/line=X/D.parquet from the punctuality file of ``d`` (when there is one)."""
+    rel = f"raw/punctuality/date={d}/p.parquet"
+    if not data.store.exists(rel):
+        return
+    pu = data.store.read_parquet(rel).with_columns(pl.col("route_id").cast(pl.Utf8))
+    if lines is not None:
+        pu = pu.filter(pl.col("route_id").is_in(list(lines)))
+    _split(pu, "route_id", d, dst)
+
+
 def split_by_line(data: Data, dates: list[dt.date], tmp: Path, lines: set[str] | None) -> set[str]:
     """Write tmp/vd/line=X/D.parquet and tmp/p/line=X/D.parquet from the day files (one read per day)."""
     seen: set[str] = set()
@@ -117,23 +151,8 @@ def split_by_line(data: Data, dates: list[dt.date], tmp: Path, lines: set[str] |
         vd = data.store.read_parquet(f"raw/vd/date={d}/vd.parquet")
         if lines is not None:
             vd = vd.filter(pl.col("line").is_in(list(lines)))
-        for (line,), g in vd.group_by("line"):
-            if line is None:
-                continue
-            p = tmp / "vd" / f"line={line}"
-            p.mkdir(parents=True, exist_ok=True)
-            g.write_parquet(p / f"{d}.parquet", compression="lz4")
-            seen.add(str(line))
-        rel = f"raw/punctuality/date={d}/p.parquet"
-        if data.store.exists(rel):
-            pu = data.store.read_parquet(rel)
-            pu = pu.with_columns(pl.col("route_id").cast(pl.Utf8))
-            if lines is not None:
-                pu = pu.filter(pl.col("route_id").is_in(list(lines)))
-            for (line,), g in pu.group_by("route_id"):
-                p = tmp / "p" / f"line={line}"
-                p.mkdir(parents=True, exist_ok=True)
-                g.write_parquet(p / f"{d}.parquet", compression="lz4")
+        _split(vd, "line", d, tmp / "vd", seen)
+        split_punctuality(data, d, tmp / "p", lines)
     return seen
 
 
@@ -168,34 +187,28 @@ def derive_line(data: Data, month: str, line: str, dates: list[dt.date], tmp: Pa
 
 
 # ---------------------------------------------------------------------------------- month
-def derive_month(data: Data, month: str, lines: list[str] | None = None, force_patterns: bool = False) -> dict:
-    t0 = time.time()
-    ingested = set(data.ingested_dates())
-    dates = [d for d in month_dates(month) if d in ingested]
-    if not dates:
-        log.warning("%s: no ingested date", month)
-        return {"month": month, "dates": 0}
-    cfg = ms.config()
+def _patterns_step(data: Data, dates: list[dt.date], force: bool) -> dict:
+    """Per-feed networks of the feeds ``dates`` use; new link keys go to the registry."""
     registry = data.link_registry()
     n_keys = len(registry)
     shas = sorted({x for c in data.candidate_shas(dates).values() for x in c})
-    pat = ensure_patterns(data, shas, registry, force=force_patterns)
+    pat = ensure_patterns(data, shas, registry, force=force)
     if len(registry) != n_keys:
         data.store.write_parquet(derived("linkkeys.parquet"), registry.table)
     data.invalidate()  # per-feed tables may have been rewritten
-    t_pat = time.time() - t0
+    return pat
 
-    t1 = time.time()
-    write_coverage(data, month, dates)
-    t_cov = time.time() - t1
 
+def _lines_step(data: Data, month: str, dates: list[dt.date], lines: list[str] | None) -> tuple[list, dict, float]:
+    """(per-line reports, failed lines, split seconds): placed + passages of every line of the month."""
+    cfg = ms.config()
     per_line, failed = [], {}
     tmp = Path(tempfile.mkdtemp(prefix=f"derive-{month}-"))
     try:
-        t2 = time.time()
+        t = time.time()
         seen = split_by_line(data, dates, tmp, set(lines) if lines else None)
-        t_split = time.time() - t2
-        todo = sorted(seen, key=lambda x: (len(x), x)) if not lines else [x for x in lines if x in seen]
+        t_split = time.time() - t
+        todo = sorted(seen, key=by_line) if not lines else [x for x in lines if x in seen]
         for line in todo:
             try:
                 r = derive_line(data, month, line, dates, tmp, cfg)
@@ -208,9 +221,24 @@ def derive_month(data: Data, month: str, lines: list[str] | None = None, force_p
                 failed[line] = repr(e)[:300]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    return per_line, failed, t_split
+
+
+def derive_month(data: Data, month: str, lines: list[str] | None = None, force_patterns: bool = False) -> dict:
+    from . import linkcube
+    t0 = time.time()
+    dates = data.month_ingested(month)
+    if not dates:
+        log.warning("%s: no ingested date", month)
+        return {"month": month, "dates": 0}
+    pat = _patterns_step(data, dates, force_patterns)
+    t_pat = time.time() - t0
+    t1 = time.time()
+    write_coverage(data, month, dates)
+    t_cov = time.time() - t1
+    per_line, failed, t_split = _lines_step(data, month, dates, lines)
     t3 = time.time()
     data.invalidate()
-    from . import linkcube
     cube = linkcube.write_month(data, month, lines)
     t_cube = time.time() - t3
     report = {
@@ -220,7 +248,7 @@ def derive_month(data: Data, month: str, lines: list[str] | None = None, force_p
                     "lines": round(sum(r.get("seconds", 0) for r in per_line), 1), "linkcube": round(t_cube, 1),
                     "total": round(time.time() - t0, 1)},
         "patterns": pat, "per_line": per_line, "linkcube": {k: cube[k] for k in ("rows", "failed")},
-        "written_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "written_at": _now(),
     }
     data.store.write_json(derived(f"_SUCCESS/month={month}.json"), report)
     data.invalidate()
@@ -229,21 +257,26 @@ def derive_month(data: Data, month: str, lines: list[str] | None = None, force_p
     return report
 
 
+def _month_report(data: Data, month: str) -> tuple[str, dict | None]:
+    rel = derived(f"_SUCCESS/month={month}.json")
+    try:
+        return rel, data.store.read_json(rel)
+    except FileNotFoundError:
+        return rel, None
+
+
 def rewrite_coverage(data: Data, month: str) -> dict:
     """Recompute only the month's coverage file (e.g. after a change of the coverage flags in the
     package) and refresh the derive report's ``written_at`` so result caches are invalidated."""
     t0 = time.time()
-    ingested = set(data.ingested_dates())
-    dates = [d for d in month_dates(month) if d in ingested]
+    dates = data.month_ingested(month)
     if not dates:
         return {"month": month, "dates": 0}
     write_coverage(data, month, dates)
-    rel = derived(f"_SUCCESS/month={month}.json")
-    try:
-        rep = data.store.read_json(rel)
-    except FileNotFoundError:
+    rel, rep = _month_report(data, month)
+    if rep is None:
         rep = {"month": month, "algo": ALGO_VERSION, "dates": [d.isoformat() for d in dates], "failed": {}}
-    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    now = _now()
     rep.update({"written_at": now, "coverage_rewritten_at": now, "coverage_microsegments": ms.version()})
     data.store.write_json(rel, rep)
     data.invalidate()
@@ -256,88 +289,73 @@ def rewrite_linkcube(data: Data, month: str) -> dict:
     ``stibms.linkcube``). ``linkcube_rewritten_at`` goes into the month's stamp, so cached rankings (and
     line results) of the month are recomputed."""
     from . import linkcube
-    rel = derived(f"_SUCCESS/month={month}.json")
-    try:
-        rep = data.store.read_json(rel)
-    except FileNotFoundError:
+    rel, rep = _month_report(data, month)
+    if rep is None:
         log.warning("%s: not derived, no link cube", month)
         return {"month": month, "lines": 0, "failed": {}}
     out = linkcube.write_month(data, month)
-    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    rep.update({"linkcube_rewritten_at": now, "linkcube": {k: out[k] for k in ("rows", "failed")}})
+    rep.update({"linkcube_rewritten_at": _now(), "linkcube": {k: out[k] for k in ("rows", "failed")}})
     data.store.write_json(rel, rep)
     data.invalidate()
     return {"month": month, "lines": out["lines"], "failed": out["failed"], "seconds": out["seconds"]}
+
+
+def _event_passages(data: Data, month: str, line: str, dates: list[dt.date], files: list[Path]) -> bool:
+    """Rewrite one line's passages of the month with the stop-event part recomputed; False when
+    there is nothing to rewrite."""
+    from microsegments.io.events import read_stib_punctuality
+    from microsegments.schema import PASSAGES
+    from microsegments.tracks import event_passages
+    prel = derived(f"passages/line={line}/month={month}.parquet")
+    old = data.read_optional(prel)
+    if old is None or not files:
+        return False
+    key = ["service_date", "hour", "link_key"]
+    ev = event_passages(read_stib_punctuality(files, route=line).collect(), data.network(line, dates))
+    out = (old.select(*key, "pattern_uid", "n_feed")
+           .join(ev.select(*key, pl.col("pattern_uid").alias("_pe"), "n_events"), on=key, how="full", coalesce=True)
+           .with_columns(pl.coalesce("pattern_uid", "_pe").alias("pattern_uid"),
+                         pl.col("n_feed").fill_null(0.0), pl.col("n_events").fill_null(0.0))
+           .with_columns(pl.max_horizontal("n_feed", "n_events").alias("n")))
+    out = out.select([pl.col(c).cast(t) for c, t in PASSAGES.items()]).sort("service_date", "pattern_uid", "link_key", "hour")
+    data.store.write_parquet(prel, out)
+    return True
 
 
 def rewrite_passages(data: Data, month: str, lines: list[str] | None = None) -> dict:
     """Recompute the stop-event part of the month's passages (``n_events``, then ``n = max``) from the
     raw punctuality files with the installed package, keep ``n_feed`` (it needs the full placed frame,
     not stored), then rebuild the month's link cube. ``passages_rewritten_at`` goes into the month's stamp."""
-    from microsegments.io.events import read_stib_punctuality
-    from microsegments.schema import PASSAGES
-    from microsegments.tracks import event_passages
+    from . import linkcube
     t0 = time.time()
-    rel = derived(f"_SUCCESS/month={month}.json")
-    try:
-        rep = data.store.read_json(rel)
-    except FileNotFoundError:
+    rel, rep = _month_report(data, month)
+    if rep is None:
         log.warning("%s: not derived, no passages", month)
         return {"month": month, "lines": 0, "failed": {}}
-    ing = set(data.ingested_dates())
-    dates = [d for d in month_dates(month) if d in ing]
+    dates = data.month_ingested(month)
     todo = sorted((ln for ln, ms_ in data.line_months().items() if month in ms_ and (lines is None or ln in lines)),
-                  key=lambda x: (len(x), x))
-    key = ["service_date", "hour", "link_key"]
+                  key=by_line)
     done, failed = 0, {}
     tmp = Path(tempfile.mkdtemp(prefix=f"passages-{month}-"))
     try:
         for d in dates:   # one read per day, split by line
-            prel = f"raw/punctuality/date={d}/p.parquet"
-            if not data.store.exists(prel):
-                continue
-            pu = data.store.read_parquet(prel).with_columns(pl.col("route_id").cast(pl.Utf8))
-            for (line,), g in pu.group_by("route_id"):
-                q = tmp / f"line={line}"
-                q.mkdir(parents=True, exist_ok=True)
-                g.write_parquet(q / f"{d}.parquet", compression="lz4")
+            split_punctuality(data, d, tmp)
         for line in todo:
             try:
-                prel = derived(f"passages/line={line}/month={month}.parquet")
-                old = data.read_optional(prel)
-                files = sorted((tmp / f"line={line}").glob("*.parquet"))
-                if old is None or not files:
-                    continue
-                ev = event_passages(read_stib_punctuality(files, route=line).collect(), data.network(line, dates))
-                out = (old.select(*key, "pattern_uid", "n_feed")
-                       .join(ev.select(*key, pl.col("pattern_uid").alias("_pe"), "n_events"), on=key, how="full",
-                             coalesce=True)
-                       .with_columns(pl.coalesce("pattern_uid", "_pe").alias("pattern_uid"),
-                                     pl.col("n_feed").fill_null(0.0), pl.col("n_events").fill_null(0.0))
-                       .with_columns(pl.max_horizontal("n_feed", "n_events").alias("n")))
-                out = out.select([pl.col(c).cast(t) for c, t in PASSAGES.items()]).sort(
-                    "service_date", "pattern_uid", "link_key", "hour")
-                data.store.write_parquet(prel, out)
-                done += 1
+                done += _event_passages(data, month, line, dates, sorted((tmp / f"line={line}").glob("*.parquet")))
             except Exception as e:  # noqa: BLE001 - one broken line must not block the month
                 log.exception("%s line %s passages failed", month, line)
                 failed[line] = repr(e)[:200]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     data.invalidate()
-    from . import linkcube
     cube = linkcube.write_month(data, month)
-    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    now = _now()
     rep.update({"passages_rewritten_at": now, "linkcube_rewritten_at": now, "microsegments_passages": ms.version(),
                 "linkcube": {k: cube[k] for k in ("rows", "failed")}})
     data.store.write_json(rel, rep)
     data.invalidate()
     return {"month": month, "lines": done, "failed": {**failed, **cube["failed"]}, "seconds": round(time.time() - t0, 1)}
-
-
-def months_for(first: dt.date, last: dt.date) -> list[str]:
-    from .data import months_between
-    return months_between(first, last)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -365,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.first:
         a = dt.date.fromisoformat(args.first + "-01")
         b = dt.date.fromisoformat((args.to or args.first) + "-01")
-        months = months_for(a, b)
+        months = months_between(a, b)
     elif args.month in (None, "current"):
         months = [month_key(parse_date("yesterday"))]
     else:

@@ -38,6 +38,7 @@ import time
 import polars as pl
 
 from . import stopzones
+from .coverage import FEED_BAD, LINE_ABSENT, with_line_absence
 from .data import Data, derived
 
 log = logging.getLogger("stibms.linkcube")
@@ -45,6 +46,7 @@ log = logging.getLogger("stibms.linkcube")
 STAND_MOVE_M = 8.0
 STAND_GAP_S = 90
 LONG_STAND_S = 180
+TICK_S = 20.0         # the feed's poll period: one report stands for TICK_S seconds
 BANDS = {"day": (6, 21), "eve": (20, 24), "am": (7, 10), "pm": (16, 19)}
 LONG_BANDS = ("day", "eve")
 DAY_HOURS = (6, 21)
@@ -57,12 +59,11 @@ def rel(month: str, name: str) -> str:
 def good_hours(cov: pl.DataFrame, placed: pl.DataFrame, dates) -> tuple[pl.DataFrame, list[dt.date]]:
     """(service_date, hour) usable for the line, and the usable days (same rules as the analysis)."""
     from microsegments.config import Quality
-    from .analysis import LINE_ABSENT, with_line_absence
     q = Quality()
     if not cov.height:
         return pl.DataFrame(schema={"service_date": pl.Date, "hour": pl.Int8}), []
     c = with_line_absence(cov, placed, dates).with_columns(pl.col("hour").cast(pl.Int8))
-    c = c.with_columns(((pl.col("coverage") >= q.min_hour_coverage) & ((pl.col("flags") & (3 | LINE_ABSENT)) == 0))
+    c = c.with_columns(((pl.col("coverage") >= q.min_hour_coverage) & ((pl.col("flags") & (FEED_BAD | LINE_ABSENT)) == 0))
                        .alias("ok"))
     a, b = DAY_HOURS
     bad = (c.filter(pl.col("hour").is_between(a, b - 1)).group_by("service_date")
@@ -75,7 +76,6 @@ def good_hours(cov: pl.DataFrame, placed: pl.DataFrame, dates) -> tuple[pl.DataF
 def report_weight(cov: pl.DataFrame) -> pl.DataFrame:
     """(service_date, hour, w): what one report is worth in ``TICK_S`` units, the real seconds a distinct
     poll stands for that hour (covered_s / n_snapshots), as the line page (``tick_from_coverage``)."""
-    from .ranking import TICK_S
     if not cov.height or "n_snapshots" not in cov.columns:
         return pl.DataFrame(schema={"service_date": pl.Date, "hour": pl.Int8, "w": pl.Float64})
     sec = pl.col("covered_s").cast(pl.Float64) / pl.col("n_snapshots").cast(pl.Float64)
@@ -94,67 +94,80 @@ def stands(placed: pl.DataFrame) -> pl.DataFrame:
     return p.with_columns((dur >= LONG_STAND_S).alias("long")).drop("_sid")
 
 
-def line_cube(line: str, placed: pl.DataFrame, passages: pl.DataFrame | None, net, cov: pl.DataFrame,
-              dates) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    """(cube, days, links, exit marks) of one line for one month (see the module docstring)."""
-    ok, days = good_hours(cov, placed, dates)
-    lit = pl.lit(line, pl.Utf8).alias("line")
-    days_df = pl.DataFrame({"service_date": days}, schema={"service_date": pl.Date}).with_columns(lit)
-    lk = net.links
-    p = placed.filter(pl.col("count").fill_null(True)) if "count" in placed.columns else placed
-    mk = stopzones.marks(p, line)
-    if not p.height or not lk.height or not days:
-        return pl.DataFrame(), days_df, pl.DataFrame(), mk
+def _band_aggs() -> list[pl.Expr]:
+    """Weighted observations per hour band and zone (running / stop), and those of long stands."""
+    w, stop, aggs = pl.col("w"), pl.col("stop"), []
+    for b, (h0, h1) in BANDS.items():
+        inb = pl.col("hour").is_between(h0, h1 - 1)
+        aggs += [w.filter(inb & ~stop).sum().cast(pl.Float32).alias(f"o_{b}_r"),
+                 w.filter(inb & stop).sum().cast(pl.Float32).alias(f"o_{b}_s")]
+        if b in LONG_BANDS:
+            aggs += [w.filter(inb & ~stop & pl.col("long")).sum().cast(pl.Float32).alias(f"l_{b}_r"),
+                     w.filter(inb & stop & pl.col("long")).sum().cast(pl.Float32).alias(f"l_{b}_s")]
+    return aggs
+
+
+def _observations(p: pl.DataFrame, net, mk: pl.DataFrame, ok: pl.DataFrame, cov: pl.DataFrame) -> pl.DataFrame:
+    """Per (service_date, link_key): the usable hours' observations by band and zone."""
     p = stands(stopzones.prepare(p, net, mk))
-    p = (p.join(lk.select("pattern_uid", "link_idx", pl.col("len_m").alias("_len")), on=["pattern_uid", "link_idx"],
-                how="left")
+    p = (p.join(net.links.select("pattern_uid", "link_idx", pl.col("len_m").alias("_len")),
+                on=["pattern_uid", "link_idx"], how="left")
          .join(stopzones.heads(mk), on="link_key", how="left"))
     head = pl.col("head_m").fill_null(stopzones.default_head())
     p = p.with_columns(((pl.col("pos_m") <= head) | (pl.col("pos_m") > pl.col("_len") - stopzones.APPROACH_M))
                        .fill_null(False).alias("stop"), pl.col("hour").cast(pl.Int8))
     p = p.join(ok, on=["service_date", "hour"], how="inner").join(report_weight(cov), on=["service_date", "hour"],
                                                                  how="left").with_columns(pl.col("w").fill_null(1.0))
-    aggs = []
-    w = pl.col("w")
-    for b, (h0, h1) in BANDS.items():
-        inb = pl.col("hour").is_between(h0, h1 - 1)
-        aggs += [w.filter(inb & ~pl.col("stop")).sum().cast(pl.Float32).alias(f"o_{b}_r"),
-                 w.filter(inb & pl.col("stop")).sum().cast(pl.Float32).alias(f"o_{b}_s")]
-        if b in LONG_BANDS:
-            aggs += [w.filter(inb & ~pl.col("stop") & pl.col("long")).sum().cast(pl.Float32).alias(f"l_{b}_r"),
-                     w.filter(inb & pl.col("stop") & pl.col("long")).sum().cast(pl.Float32).alias(f"l_{b}_s")]
-    o = p.group_by("service_date", "link_key").agg(aggs)
-    if passages is not None and passages.height:
-        ps = passages.with_columns(pl.col("hour").cast(pl.Int8)).join(ok, on=["service_date", "hour"], how="inner")
-        pas = ps.group_by("service_date", "link_key").agg(
-            [pl.col("n").filter(pl.col("hour").is_between(h0, h1 - 1)).sum().cast(pl.Float32).alias(f"p_{b}")
-             for b, (h0, h1) in BANDS.items()])
-        o = o.join(pas, on=["service_date", "link_key"], how="full", coalesce=True)
-    else:
-        o = o.with_columns([pl.lit(0.0, pl.Float32).alias(f"p_{b}") for b in BANDS])
-    num = [c for c in o.columns if c[:2] in ("o_", "l_", "p_")]
-    o = o.with_columns([pl.col(c).fill_null(0) for c in num]).with_columns(lit)
-    # links: names, length, terminus role (first/last link of a pattern; a stop that ends a pattern)
+    return p.group_by("service_date", "link_key").agg(_band_aggs())
+
+
+def _with_passages(o: pl.DataFrame, passages: pl.DataFrame | None, ok: pl.DataFrame) -> pl.DataFrame:
+    if passages is None or not passages.height:
+        return o.with_columns([pl.lit(0.0, pl.Float32).alias(f"p_{b}") for b in BANDS])
+    ps = passages.with_columns(pl.col("hour").cast(pl.Int8)).join(ok, on=["service_date", "hour"], how="inner")
+    pas = ps.group_by("service_date", "link_key").agg(
+        [pl.col("n").filter(pl.col("hour").is_between(h0, h1 - 1)).sum().cast(pl.Float32).alias(f"p_{b}")
+         for b, (h0, h1) in BANDS.items()])
+    return o.join(pas, on=["service_date", "link_key"], how="full", coalesce=True)
+
+
+def _link_roles(net) -> pl.DataFrame:
+    """(link_key, from_name, to_name, len_m, term): names, length, terminus role (first/last link of a
+    pattern; a stop that ends a pattern)."""
+    lk = net.links
     pats = net.patterns.select("pattern_uid", "stop_ids")
-    ends = set(pats["stop_ids"].list.first().to_list()) | set(pats["stop_ids"].list.last().to_list())
+    ends = list(set(pats["stop_ids"].list.first().to_list()) | set(pats["stop_ids"].list.last().to_list()))
     first_last = (lk.with_columns(pl.col("link_idx").max().over("pattern_uid").alias("_m"))
                   .filter((pl.col("link_idx") == 0) | (pl.col("link_idx") == pl.col("_m")))["link_key"].unique())
-    links = (lk.group_by("link_key").agg(pl.col("from_stop").first(), pl.col("to_stop").first(),
-                                         pl.col("from_name").first(), pl.col("to_name").first(),
-                                         pl.col("len_m").median())
-             .with_columns(pl.when(pl.col("link_key").is_in(first_last.implode())).then(1)
-                           .when(pl.col("from_stop").is_in(list(ends)) | pl.col("to_stop").is_in(list(ends))).then(2)
-                           .otherwise(0).cast(pl.Int8).alias("term"), lit)
-             .drop("from_stop", "to_stop"))
-    return o, days_df, links, mk
+    return (lk.group_by("link_key").agg(pl.col("from_stop").first(), pl.col("to_stop").first(),
+                                        pl.col("from_name").first(), pl.col("to_name").first(),
+                                        pl.col("len_m").median())
+            .with_columns(pl.when(pl.col("link_key").is_in(first_last.implode())).then(1)
+                          .when(pl.col("from_stop").is_in(ends) | pl.col("to_stop").is_in(ends)).then(2)
+                          .otherwise(0).cast(pl.Int8).alias("term"))
+            .drop("from_stop", "to_stop"))
+
+
+def line_cube(line: str, placed: pl.DataFrame, passages: pl.DataFrame | None, net, cov: pl.DataFrame,
+              dates) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """(cube, days, links, exit marks) of one line for one month (see the module docstring)."""
+    ok, days = good_hours(cov, placed, dates)
+    lit = pl.lit(line, pl.Utf8).alias("line")
+    days_df = pl.DataFrame({"service_date": days}, schema={"service_date": pl.Date}).with_columns(lit)
+    p = placed.filter(pl.col("count").fill_null(True)) if "count" in placed.columns else placed
+    mk = stopzones.marks(p, line)
+    if not p.height or not net.links.height or not days:
+        return pl.DataFrame(), days_df, pl.DataFrame(), mk
+    o = _with_passages(_observations(p, net, mk, ok, cov), passages, ok)
+    num = [c for c in o.columns if c[:2] in ("o_", "l_", "p_")]
+    o = o.with_columns([pl.col(c).fill_null(0) for c in num]).with_columns(lit)
+    return o, days_df, _link_roles(net).with_columns(lit), mk
 
 
 def write_month(data: Data, month: str, lines: list[str] | None = None) -> dict:
     """Build ``linkcube/month=M`` from the month's placed + passages files (all lines)."""
-    from .data import month_dates
     t0 = time.time()
-    ing = set(data.ingested_dates())
-    dates = [d for d in month_dates(month) if d in ing]
+    dates = data.month_ingested(month)
     have = data.line_months()
     todo = [ln for ln, ms_ in have.items() if month in ms_ and (lines is None or ln in lines)]
     cov = data.coverage(dates)
@@ -173,12 +186,10 @@ def write_month(data: Data, month: str, lines: list[str] | None = None) -> dict:
         except Exception as e:  # noqa: BLE001 - one broken line must not block the month
             log.exception("linkcube %s line %s failed", month, ln)
             failed[ln] = repr(e)[:200]
-    if lines is not None:   # partial rebuild: keep the other lines' rows
-        for name, acc in (("cube", cubes), ("days", dayss), ("links", linkss), ("marks", markss)):
-            old = data.read_optional(rel(month, name))
-            if old is not None and old.height:
-                acc.append(old.filter(~pl.col("line").is_in(lines)))
     for name, acc in (("cube", cubes), ("days", dayss), ("links", linkss), ("marks", markss)):
+        old = data.read_optional(rel(month, name)) if lines is not None else None
+        if old is not None and old.height:   # partial rebuild: keep the other lines' rows
+            acc.append(old.filter(~pl.col("line").is_in(lines)))
         df = pl.concat(acc, how="diagonal_relaxed") if acc else pl.DataFrame()
         data.store.write_parquet(rel(month, name), df)
     n = sum(c.height for c in cubes)

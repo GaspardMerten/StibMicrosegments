@@ -33,6 +33,7 @@ import traceback
 from datetime import date, datetime, timezone
 
 from . import __version__, gtfs, punctuality, vd
+from .data import derived, month_key
 from .mobilitytwin import MobilityTwin
 from .servicedays import date_range, parse_date, window
 from .storage import Store
@@ -123,10 +124,14 @@ def ingest_date(mt: MobilityTwin, store: Store, d: date, force: bool = False, wo
     return report
 
 
+def _have_package() -> bool:
+    import importlib.util
+    return importlib.util.find_spec("microsegments") is not None
+
+
 def derive_months(store: Store, months: list[str]) -> bool:
     """Run stibms.derive on ``months`` (all lines). Returns True if something failed."""
-    import importlib.util
-    if importlib.util.find_spec("microsegments") is None:
+    if not _have_package():
         log.warning("microsegments is not installed: derive skipped")
         return False
     from . import derive
@@ -142,15 +147,9 @@ def derive_months(store: Store, months: list[str]) -> bool:
     return bad
 
 
-def _algo() -> int:
-    from .data import ALGO_VERSION
-    return ALGO_VERSION
-
-
 def refresh_ranking(store: Store) -> bool:
     """Precompute the default network ranking. Returns True if it failed."""
-    import importlib.util
-    if importlib.util.find_spec("microsegments") is None:
+    if not _have_package():
         return False
     try:
         from . import ranking
@@ -162,7 +161,7 @@ def refresh_ranking(store: Store) -> bool:
         return True
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m stibms.ingest", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--date", required=True, help="first service date (YYYY-MM-DD or 'yesterday')")
@@ -178,21 +177,45 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-ranking", action="store_true", help="nightly: do not refresh the network ranking")
     ap.add_argument("--no-derive", action="store_true",
                     help="do not re-derive the touched months afterwards (always skipped with --shard-from-env)")
-    args = ap.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
+    return ap
 
-    root = args.local or args.bucket or os.environ.get("MS_BUCKET")
-    if not root:
-        ap.error("give --bucket, --local or set MS_BUCKET")
+
+def _dates(args) -> list[date]:
     first = parse_date(args.date)
-    last = parse_date(args.to) if args.to else first
-    dates = date_range(first, last)
+    dates = date_range(first, parse_date(args.to) if args.to else first)
     if args.shard_from_env:
         idx = int(os.environ.get("CLOUD_RUN_TASK_INDEX", "0"))
         cnt = int(os.environ.get("CLOUD_RUN_TASK_COUNT", "1"))
         dates = shard(dates, idx, cnt)
         log.info("task %d/%d: %d dates", idx, cnt, len(dates))
+    return dates
 
+
+def _after_ingest(store: Store, args, done: list[date]) -> bool:
+    """Re-derive the months that got new days (the nightly run: the current month, all lines), then
+    on the nightly run refresh the default ranking. Returns True if something failed."""
+    nightly = args.date.strip().lower() == "yesterday"
+    months = {month_key(d) for d in done}
+    if nightly:
+        # also retry the month of yesterday if its derive is missing (a failed night)
+        m = month_key(parse_date("yesterday"))
+        if m not in months and not store.exists(derived(f"_SUCCESS/month={m}.json")):
+            months.add(m)
+    bad = derive_months(store, sorted(months)) if months else False
+    # the network ranking of the default window (last complete month): a sum over the link cubes
+    if nightly and not args.no_ranking:
+        bad |= refresh_ranking(store)
+    return bad
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = _parser()
+    args = ap.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
+    root = args.local or args.bucket or os.environ.get("MS_BUCKET")
+    if not root:
+        ap.error("give --bucket, --local or set MS_BUCKET")
+    dates = _dates(args)
     store, mt = Store(root), MobilityTwin()
     failed, done = [], []
     for d in dates:
@@ -204,24 +227,10 @@ def main(argv: list[str] | None = None) -> int:
             failed.append(d)
     if not args.no_index:
         gtfs.rebuild_index(store)
-    # Re-derive the months that got new days (the nightly run: the current month, all lines).
-    # Backfill tasks run in parallel and would race on the link-key registry: they skip this and
-    # the months are derived afterwards with python -m stibms.derive --from A --to B.
-    if not args.no_derive and not args.shard_from_env:
-        months = {f"{d.year:04d}-{d.month:02d}" for d in done}
-        if args.date.strip().lower() == "yesterday":
-            # nightly: also retry the month of yesterday if its derive is missing (a failed night)
-            y = parse_date("yesterday")
-            m = f"{y.year:04d}-{y.month:02d}"
-            if m not in months and not store.exists(f"derived/v{_algo()}/_SUCCESS/month={m}.json"):
-                months.add(m)
-        bad = derive_months(store, sorted(months)) if months else False
-        # The network ranking of the default window (last complete month); a no-op when the
-        # window's data did not change (the result is cached under a key of its data stamp).
-        if args.date.strip().lower() == "yesterday" and not args.no_ranking:
-            bad |= refresh_ranking(store)
-        if bad:
-            return 1
+    # Backfill tasks run in parallel and would race on the link-key registry: they skip the derive
+    # and the months are derived afterwards with python -m stibms.derive --from A --to B.
+    if not args.no_derive and not args.shard_from_env and _after_ingest(store, args, done):
+        return 1
     if failed:
         log.error("%d dates failed: %s", len(failed), ", ".join(map(str, failed)))
         return 1

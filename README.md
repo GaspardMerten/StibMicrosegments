@@ -53,10 +53,10 @@ uv pip install -e ../microsegments fastapi uvicorn
 MS_BUCKET=data/ms .venv/bin/uvicorn stibms.api:app --port 8080     # or MS_BUCKET=gs://...
 ```
 
-Three pages share `static/index.html`: `/` (one line), `/comparer` (two periods) and `/classement`
+Three pages share `static/index.html` (its scripts and styles: `static/*.js`, `static/app.css`): `/` (one line), `/comparer` (two periods) and `/classement`
 (network ranking); the URL query string carries the state (`/methode` redirects to `/`). The analysis itself is the package's
 `html/template.html`, fed by `/api/analysis` or `/api/compare`. Endpoints are listed in
-`src/stibms/api.py`: `/api/health`, `/api/status`, `/api/lines`, `/api/coverage`, `/api/versions`,
+`src/stibms/api/__init__.py`: `/api/health`, `/api/status`, `/api/lines`, `/api/coverage`, `/api/versions`,
 `/api/analysis[.csv|.parquet]`, `/api/hotspots[.csv|.parquet]`, `/api/tune`, `/api/compare`,
 `/api/ranking`. Results are cached in process and under `results/v{ALGO}/` in the bucket.
 

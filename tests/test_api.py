@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import json
 
 import polars as pl
 import pytest
@@ -159,7 +160,7 @@ def test_query_key_is_canonical():
 
 def test_line_absent_hours():
     pytest.importorskip("microsegments")
-    from stibms.analysis import line_absent
+    from stibms.coverage import line_absent
     days = [dt.date(2025, 3, 3) + dt.timedelta(days=i) for i in range(4)]
     rows = [(d, h) for d in days for h in range(6, 22) for _ in range(30) if not (d == days[2] and h < 12)]
     placed = pl.DataFrame(rows, schema={"service_date": pl.Date, "hour": pl.Int8}, orient="row")
@@ -207,7 +208,7 @@ def test_linkcube_written(derived_root):
 
 
 def test_regulation_overlap():
-    from stibms.ranking import overlap
+    from stibms.stretches import overlap
     a = [[4.35, 50.85], [4.352, 50.85]]                 # ~140 m east-west
     b = [[4.3505, 50.85005], [4.352, 50.85005]]         # same street, 5 m north, shorter
     c = [[4.35, 50.852], [4.352, 50.852]]               # 220 m north
@@ -240,7 +241,6 @@ def test_page_paths(client):
 def test_coverage_only_rewrite(derived_root):
     from stibms.data import Data
     from stibms.derive import rewrite_coverage
-    import json
     rel = derived_root / derived("_SUCCESS/month=2025-06.json")
     before = json.loads(rel.read_text())
     cov = pl.read_parquet(derived_root / derived("coverage/month=2025-06.parquet"))
@@ -404,7 +404,7 @@ def test_schedule_cache_control(client):
 
 
 def test_versions_grouped_by_stops():
-    from stibms.analysis import _group_versions
+    from stibms.versions import _group_versions
     full, short = ["A", "B", "C", "D"], ["B", "C", "D"]
 
     def run(a, b, n, stops, uid, lens=None):
@@ -423,7 +423,7 @@ def test_versions_grouped_by_stops():
 
 
 def test_lasting_change_before_period():
-    from stibms.analysis import _lasting_change
+    from stibms.versions import _lasting_change
     full, cut, works = ["A", "B", "C", "D"], ["B", "C", "D"], ["C", "D"]
 
     def run(a, b, n, stops):
@@ -438,3 +438,59 @@ def test_lasting_change_before_period():
     assert c["since"] == "2025-05-21" and c["removed"] == ["A"] and not c["added"] and c["before"]["last"] == "2025-05-16"
     assert _lasting_change(back[2:], ref) is None                 # the same route all the lookback
     assert _lasting_change([], ref) is None
+
+
+def test_query_canonical_is_stable():
+    """The canonical forms are the result cache keys (with the package version): any change here
+    orphans every cached result."""
+    pytest.importorskip("microsegments")
+    from stibms.queries import CompareQuery, Query
+    from stibms.ranking import RankQuery
+    D = dt.date
+
+    def canon(x):
+        return json.loads(json.dumps(x.canonical()))
+    base = {"holidays": "exclude", "seg": 30.0, "phase": 0.0, "grid": "stops", "stopzone": [36.0, 38.0],
+            "ref": [20, 24], "hours": [5, 24]}
+    q = Query("55", D(2025, 3, 1), D(2025, 3, 31), dow=(4, 0), school="exclude", reduced="include",
+              exclude=((D(2025, 3, 10), D(2025, 3, 12)), (D(2025, 3, 13), D(2025, 3, 13)), (D(2025, 2, 1), D(2025, 2, 5))))
+    assert canon(q) == {"line": "55", "first": "2025-03-01", "last": "2025-03-31", "dow": [0, 4], **base, "B": 200,
+                             "school": "exclude", "reduced": "include", "exclude": [["2025-03-10", "2025-03-13"]]}
+    assert list(Query("55", D(2025, 3, 1), D(2025, 3, 31)).canonical()) == ["line", "first", "last", "dow", *base, "B"]
+    cq = CompareQuery("55", (D(2025, 3, 1), D(2025, 3, 31)), (D(2025, 5, 1), D(2025, 5, 31)),
+                      exclude=((D(2025, 4, 1), D(2025, 4, 2)),))
+    assert canon(cq) == {"line": "55", "a": ["2025-03-01", "2025-03-31"], "b": ["2025-05-01", "2025-05-31"],
+                              "dow": [0, 1, 2, 3, 4], **base, "B": 100, "exclude": [["2025-04-01", "2025-04-02"]]}
+    rq = RankQuery(D(2025, 3, 1), D(2025, 3, 31), mode="tram", stops=True, exclude=((D(2025, 3, 3), D(2025, 3, 3)),))
+    assert canon(rq) == {"first": "2025-03-01", "last": "2025-03-31", "dow": [0, 1, 2, 3, 4], "holidays": "exclude",
+                              "mode": "tram", "terminus": False, "stops": True, "exclude": [["2025-03-03", "2025-03-03"]]}
+
+
+def test_static_files_carry_the_release(client):
+    from stibms.api import rev
+    page = client.get("/").text
+    assert "__REV__" not in page and f"/static/app.css?rev={rev()}" in page
+    for name in ("util", "excl", "lines", "quality", "lineview", "routes", "rank", "main"):
+        assert f"/static/{name}.js?rev={rev()}" in page
+        r = client.get(f"/static/{name}.js")
+        assert r.status_code == 200 and "javascript" in r.headers["content-type"] and "__REV__" not in r.text
+    assert f'const REV = "{rev()}"' in client.get("/static/util.js").text
+    assert client.get("/static/app.css").headers["content-type"].startswith("text/css")
+    assert client.get("/static/nope.js").status_code == 404
+
+
+def test_tune_bad_lengths(client):
+    assert client.get(f"/api/tune?{Q}&lengths=abc").status_code == 422
+    assert client.get(f"/api/tune?{Q}&lengths=1,2").status_code == 422
+
+
+def test_day_status_counts_an_hour_once():
+    from stibms.coverage import LINE_ABSENT, _per_day, _status
+    d = dt.date(2025, 3, 3)
+    # 3 of the 15 hours are both low and without the line: 3 unusable hours (< 25 %), not 6
+    cov = pl.DataFrame({"service_date": [d] * 24, "hour": list(range(4, 28)),
+                        "coverage": [0.5 if 6 <= h < 9 else 1.0 for h in range(4, 28)],
+                        "flags": [LINE_ABSENT if 6 <= h < 9 else 0 for h in range(4, 28)]})
+    per = _per_day(cov, 0.8)
+    assert per[d][1:] == (3, 3, 3)
+    assert _status(d, {d}, {"2025-03": ""}, per[d], 100, 0.25 + 1e-9) == "ok"

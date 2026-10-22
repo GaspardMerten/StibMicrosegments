@@ -24,6 +24,7 @@ from pathlib import Path
 
 import polars as pl
 
+from .servicedays import date_range  # noqa: F401 - re-exported, the one date range of the package
 from .storage import Store
 
 ALGO_VERSION = 1
@@ -57,8 +58,9 @@ def months_between(a: dt.date, b: dt.date) -> list[str]:
     return out
 
 
-def date_range(a: dt.date, b: dt.date) -> list[dt.date]:
-    return [a + dt.timedelta(days=i) for i in range((b - a).days + 1)]
+def by_line(line: str) -> tuple[int, str]:
+    """Sort key of line numbers: 1, 2, ..., 10, ..., N04."""
+    return len(line), line
 
 
 def months_of(dates) -> list[str]:
@@ -102,6 +104,11 @@ class Data:
                 out.append(dt.date.fromisoformat(p.rsplit("date=", 1)[1][:10]))
             return sorted(out)
         return self._cached("ingested", f)
+
+    def month_ingested(self, month: str) -> list[dt.date]:
+        """The ingested dates of ``month``."""
+        ing = set(self.ingested_dates())
+        return [d for d in month_dates(month) if d in ing]
 
     def gtfs_index(self) -> pl.DataFrame:
         def f():
@@ -235,6 +242,24 @@ class Data:
             self._sha_tables[sha] = out
         return out
 
+    def _feed_tables(self, shas: list[str]) -> dict[str, dict | None]:
+        if len(shas) <= 1:
+            return {s: self.sha_tables(s) for s in shas}
+        with ThreadPoolExecutor(max_workers=min(8, len(shas))) as ex:
+            return dict(zip(shas, ex.map(self.sha_tables, shas)))
+
+    @staticmethod
+    def _pick_feeds(cands: dict, line_days: dict[str, pl.DataFrame]) -> dict[str, list[dt.date]]:
+        """sha -> its dates: for each date the first candidate feed that runs the line that day."""
+        pick: dict[str, list[dt.date]] = {}
+        for d, cs in cands.items():
+            for sha in cs:
+                ld = line_days.get(sha)
+                if ld is not None and ld.height and (ld["service_date"] == d).any():
+                    pick.setdefault(sha, []).append(d)
+                    break
+        return pick
+
     def network(self, line: str, dates, registry=None):
         """microsegments Network of ``line`` on ``dates`` assembled from the per-sha tables."""
         from microsegments.network import KeyRegistry, Network
@@ -243,31 +268,15 @@ class Data:
 
         line = str(line)
         cands = self.candidate_shas(dates)
-        order = sorted({x for c in cands.values() for x in c})
-        if len(order) > 1:
-            with ThreadPoolExecutor(max_workers=min(8, len(order))) as ex:
-                tables = dict(zip(order, ex.map(self.sha_tables, order)))
-        else:
-            tables = {s: self.sha_tables(s) for s in order}
+        tables = self._feed_tables(sorted({x for c in cands.values() for x in c}))
         # this line's pattern days per feed, then for each date the first feed that runs the line
-        line_days: dict[str, pl.DataFrame] = {}
-        for sha, t in tables.items():
-            if t is not None:
-                line_days[sha] = t["pattern_days"].filter(pl.col("line") == line)
-        pick: dict[str, list[dt.date]] = {}
-        for d, cs in cands.items():
-            for sha in cs:
-                ld = line_days.get(sha)
-                if ld is not None and ld.height and (ld["service_date"] == d).any():
-                    pick.setdefault(sha, []).append(d)
-                    break
+        line_days = {sha: t["pattern_days"].filter(pl.col("line") == line) for sha, t in tables.items() if t is not None}
         pats, links, stops, days = [], [], [], []
-        for sha, mine in pick.items():
+        for sha, mine in self._pick_feeds(cands, line_days).items():
             t = tables[sha]
             p = t["patterns"].filter(pl.col("line") == line)
-            uids = p["pattern_uid"].implode()
             pats.append(p)
-            links.append(t["links"].filter(pl.col("pattern_uid").is_in(uids)))
+            links.append(t["links"].filter(pl.col("pattern_uid").is_in(p["pattern_uid"].implode())))
             stops.append(t["stops"].filter(pl.col("line") == line))
             days.append(line_days[sha].filter(pl.col("service_date").is_in(mine)))
         pd_schema = {**schema.PATTERN_DAY, **PATTERN_DAY_EXTRA}
@@ -282,11 +291,11 @@ class Data:
             st = pl.concat(stops).unique("stop_id", keep="first", maintain_order=True).drop("line")
             pdays = pl.concat(days).select(list(pd_schema))
         found = set(pdays["service_date"].to_list())
-        missing = sorted(d for d in dates if d not in found)
         return Network(route=line, patterns=patterns.sort("direction_id", "pattern_uid"),
                        pattern_days=pdays.sort("service_date", "direction_id", "n_trips", descending=[False, False, True]),
                        links=lk.sort("pattern_uid", "link_idx"), stops=st,
-                       registry=registry if registry is not None else KeyRegistry(), missing_dates=missing)
+                       registry=registry if registry is not None else KeyRegistry(),
+                       missing_dates=sorted(d for d in dates if d not in found))
 
     def coverage(self, dates) -> pl.DataFrame:
         ds = sorted(set(dates))

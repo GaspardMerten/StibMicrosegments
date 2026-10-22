@@ -34,9 +34,6 @@ class Store:
     def path(self, rel: str) -> str:
         return f"{self._base}/{rel.lstrip('/')}"
 
-    def url(self, rel: str) -> str:
-        return f"{self.root}/{rel.lstrip('/')}"
-
     def exists(self, rel: str) -> bool:
         return self.fs.exists(self.path(rel))
 

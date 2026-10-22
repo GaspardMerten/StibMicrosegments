@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import zipfile
 from datetime import date, datetime, timedelta, timezone
 
@@ -22,6 +23,7 @@ from .mobilitytwin import MobilityTwin, Snapshot
 from .servicedays import TZ, local_midnight
 from .storage import Store
 
+log = logging.getLogger("stibms.gtfs")
 ENDPOINT = "stib/gtfs-parquet"
 LOOKBACK_DAYS = 31
 
@@ -58,7 +60,7 @@ def ingest_day(mt: MobilityTwin, store: Store, d: date) -> dict:
             from .schedule import write_feed_trips
             write_feed_trips(store, sha)
         except Exception:  # noqa: BLE001 - a cache: the API computes it on first use otherwise
-            pass
+            log.warning("daytrips of feed %s not written", sha[:12], exc_info=True)
     snap_local = datetime.fromtimestamp(s.timestamp, timezone.utc).astimezone(TZ).date()
     entry = {"service_date": d.isoformat(), "sha": sha, "snapshot": s.date,
              "snapshot_date": snap_local.isoformat(), "age_days": (d - snap_local).days}
