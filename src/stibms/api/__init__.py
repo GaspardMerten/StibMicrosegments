@@ -37,8 +37,8 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
     GET /, /comparer, /classement             the page (one line / two periods / network ranking); /methode -> /
     GET /view?<analysis or compare params>    the package page fed by /api/analysis or /api/compare
 
-Results are cached in process (LRU) and in the bucket (``results/v{ALGO}/<hash>.json.gz``), keyed
-by the parameters, ALGO_VERSION, the package version and the data stamp (last ingested date and
+Results (analysis, compare, hotspots, tune, coverage, versions) are cached in process (LRU) and in
+the bucket (``results/v{ALGO}/<hash>.json.gz``), keyed by the parameters, ALGO_VERSION, the package version and the data stamp (last ingested date and
 derive time of the months involved), so a nightly ingest invalidates only what it touches.
 Periods that are fully past and ingested are sent with ``Cache-Control: max-age=86400``.
 Heavy imports (polars, microsegments) happen on the first data request, not at start-up.
@@ -46,6 +46,8 @@ CPU-heavy work (an analysis or comparison not in cache) runs one at a time per i
 so a burst of new requests cannot starve the cheap ones (health, lines, cached results, ranking);
 cache hits (memory or bucket) never take that guard. A start-up thread warms imports and listings.
 The line page hides the package's hotspots (``show_hotspots: false``), so they are not computed.
+Memory (2 GiB per instance): an analysis keeps no Run (only its JSON), networks are read per
+(feed, line), placed files are prepared and counted one month at a time.
 
 Modules: ``context`` (state, HEAVY, warm-up), ``params`` (query strings), ``cache`` (stamps, keys,
 Cache-Control, result cache), routes in ``meta`` (health, lines, status), ``line`` (one line, two
@@ -56,6 +58,7 @@ from __future__ import annotations
 import contextlib
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from . import line, meta, pages, rank
@@ -72,6 +75,8 @@ async def _lifespan(app):
 app = FastAPI(title="STIB microsegments", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=_lifespan)
 for _m in (meta, line, rank, pages):
     app.include_router(_m.router)
+# pages, scripts, lines; skips the cached results, already gzipped (Content-Encoding set)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 @app.exception_handler(Exception)

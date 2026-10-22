@@ -16,9 +16,11 @@ so old results stay readable until the new one is fully derived.
 from __future__ import annotations
 
 import datetime as dt
+import io
 import os
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -33,6 +35,42 @@ FALLBACK_FEEDS = 2    # earlier feeds tried when a date's own feed has no trip o
 GTFS_TABLES = ("routes", "trips", "stop_times", "stops", "shapes", "calendar", "calendar_dates")
 PLACED_COLS = ("ts", "service_date", "hour", "dow", "pattern_uid", "direction_id", "link_idx", "link_key",
                "pos_m", "s_m", "raw_dist_m", "track_id", "count", "flags")
+
+
+GEOMETRY = pl.List(pl.List(pl.Float64))
+
+
+class SizedLRU:
+    """LRU bounded by the total size of its values (bytes, given on put)."""
+
+    def __init__(self, max_bytes: int):
+        self.max_bytes, self.size, self.d, self.lock = max_bytes, 0, OrderedDict(), threading.Lock()
+
+    def get(self, k):
+        with self.lock:
+            hit = self.d.get(k)
+            if hit is not None:
+                self.d.move_to_end(k)
+                return hit[0]
+        return None
+
+    def put(self, k, v, nbytes: int) -> None:
+        with self.lock:
+            old = self.d.pop(k, None)
+            self.size -= old[1] if old else 0
+            self.d[k] = (v, nbytes)
+            self.size += nbytes
+            while self.size > self.max_bytes and len(self.d) > 1:
+                self.size -= self.d.popitem(last=False)[1][1]
+
+
+def _compact(df: pl.DataFrame) -> pl.DataFrame:
+    """A copy of ``df`` in buffers of its own: a filtered frame's strings still point into the buffers
+    of the whole file (all lines of a feed), which a cached slice would otherwise keep alive."""
+    buf = io.BytesIO()
+    df.write_ipc(buf)
+    buf.seek(0)
+    return pl.read_ipc(buf)
 
 
 def derived(rel: str = "") -> str:
@@ -69,7 +107,7 @@ def months_of(dates) -> list[str]:
 
 
 class Data:
-    """Bucket access with small in-process caches (index, ingested dates, per-sha networks)."""
+    """Bucket access with small in-process caches (index, ingested dates, per-(feed, line) networks)."""
 
     def __init__(self, root: str | Store, cache_dir: str | None = None, ttl_s: float = 600.0):
         self.store = root if isinstance(root, Store) else Store(root)
@@ -77,7 +115,8 @@ class Data:
         self.ttl_s = ttl_s
         self._lock = threading.Lock()
         self._memo: dict[str, tuple[float, object]] = {}
-        self._sha_tables: dict[str, dict[str, pl.DataFrame]] = {}
+        self._slices = SizedLRU(int(os.environ.get("MS_NET_CACHE_MB", "128")) << 20)   # (sha, line, geometry)
+        self._sha_locks: dict[str, threading.Lock] = {}
 
     # ------------------------------------------------------------------ memo
     def _cached(self, key: str, fn, ttl: float | None = None):
@@ -183,19 +222,30 @@ class Data:
         return self._cached(f"routes:{sha}", lambda: self.store.read_parquet(f"gtfs/feeds/{sha}/routes.parquet"),
                             ttl=1e9)
 
-    def read_optional(self, rel: str) -> pl.DataFrame | None:
+    def read_optional(self, rel: str, columns: list[str] | None = None) -> pl.DataFrame | None:
         """One request instead of exists + read (matters on GCS)."""
         try:
-            return self.store.read_parquet(rel)
+            return self.store.read_parquet(rel, columns=columns)
         except FileNotFoundError:
             return None
 
-    def read_many(self, rels: list[str]) -> list[pl.DataFrame | None]:
-        """read_optional over several files, in parallel threads (GCS latency)."""
-        if len(rels) <= 1:
-            return [self.read_optional(r) for r in rels]
-        with ThreadPoolExecutor(max_workers=min(16, len(rels))) as ex:
-            return list(ex.map(self.read_optional, rels))
+    def _read_bytes_optional(self, rel: str) -> bytes | None:
+        try:
+            return self.store.read_bytes(rel)
+        except FileNotFoundError:
+            return None
+
+    @staticmethod
+    def _map(fn, items: list) -> list:
+        """fn over items, in parallel threads (GCS latency)."""
+        if len(items) <= 1:
+            return [fn(x) for x in items]
+        with ThreadPoolExecutor(max_workers=min(16, len(items))) as ex:
+            return list(ex.map(fn, items))
+
+    def read_many(self, rels: list[str], columns: list[str] | None = None) -> list[pl.DataFrame | None]:
+        """read_optional over several files, in parallel threads."""
+        return self._map(lambda r: self.read_optional(r, columns), rels)
 
     def snapshots(self, dates) -> pl.DataFrame:
         """SNAPSHOT frame (ts UTC, n_rows, frozen) of the given ingested dates."""
@@ -219,34 +269,60 @@ class Data:
         t = self.read_optional(derived("linkkeys.parquet"))
         return KeyRegistry(t)
 
-    def sha_tables(self, sha: str) -> dict[str, pl.DataFrame] | None:
-        """patterns / links / stops / pattern_days of one feed, all lines (cached; a feed's tables
-        only change when its date set grows, see derive.ensure_patterns)."""
-        base = derived(f"patterns/sha={sha}")
-
+    def _sha_stamp(self, sha: str) -> str | None:
         def read_stamp():
             try:
-                return self.store.read_json(f"{base}/_SUCCESS").get("written_at")
+                return self.store.read_json(derived(f"patterns/sha={sha}/_SUCCESS")).get("written_at")
             except FileNotFoundError:
                 return None
-        stamp = self._cached(f"shastamp:{sha}", read_stamp)
-        hit = self._sha_tables.get(sha)
-        if hit is not None and hit.get("_stamp") == stamp:
-            return hit
+        return self._cached(f"shastamp:{sha}", read_stamp)
+
+    def line_tables(self, sha: str, line: str, geometry: bool = True) -> dict[str, pl.DataFrame] | None:
+        """patterns / links / stops / pattern_days of one line in one feed (cached per (sha, line); a
+        feed's tables only change when its date set grows, see derive.ensure_patterns). Without
+        ``geometry`` the shapes are not read (null columns)."""
+        stamp = self._sha_stamp(sha)
         if stamp is None:
             return None
-        names = ("patterns", "links", "stops", "pattern_days")
-        out = dict(zip(names, self.read_many([f"{base}/{n}.parquet" for n in names])))
-        out["_stamp"] = stamp  # type: ignore[assignment]
-        with self._lock:
-            self._sha_tables[sha] = out
+        key = (sha, line, geometry)
+        hit = self._slices.get(key)
+        if hit is not None and hit[0] == stamp:
+            return hit[1]
+        with self._sha_lock(sha):     # concurrent requests read a feed once
+            hit = self._slices.get(key)
+            if hit is not None and hit[0] == stamp:
+                return hit[1]
+            out = self._read_line_tables(sha, line, geometry)
+            self._slices.put(key, (stamp, out), sum(f.estimated_size() for f in out.values()))
         return out
 
-    def _feed_tables(self, shas: list[str]) -> dict[str, dict | None]:
+    def _sha_lock(self, sha: str) -> threading.Lock:
+        with self._lock:
+            return self._sha_locks.setdefault(sha, threading.Lock())
+
+    def _read_line_tables(self, sha: str, line: str, geometry: bool) -> dict[str, pl.DataFrame]:
+        base = derived(f"patterns/sha={sha}")
+
+        def read(name: str, schema: dict, keep) -> pl.DataFrame:
+            cols = None if geometry else [c for c in schema if c != "geometry"]
+            f = self.store.read_parquet(f"{base}/{name}.parquet", columns=cols).filter(keep)
+            return f if geometry else f.with_columns(pl.lit(None, GEOMETRY).alias("geometry"))
+        from microsegments import schema
+        mine = pl.col("line") == line
+        pats = read("patterns", {**schema.PATTERN, "line": pl.Utf8}, mine)
+        out = {"patterns": pats,
+               "links": read("links", schema.LINK, pl.col("pattern_uid").is_in(pats["pattern_uid"].implode())),
+               "stops": self.store.read_parquet(f"{base}/stops.parquet").filter(mine),
+               "pattern_days": self.store.read_parquet(f"{base}/pattern_days.parquet").filter(mine)}
+        return {k: _compact(f) for k, f in out.items()}
+
+    def _feed_tables(self, shas: list[str], line: str, geometry: bool) -> dict[str, dict | None]:
+        def f(sha):
+            return self.line_tables(sha, line, geometry)
         if len(shas) <= 1:
-            return {s: self.sha_tables(s) for s in shas}
+            return {s: f(s) for s in shas}
         with ThreadPoolExecutor(max_workers=min(8, len(shas))) as ex:
-            return dict(zip(shas, ex.map(self.sha_tables, shas)))
+            return dict(zip(shas, ex.map(f, shas)))
 
     @staticmethod
     def _pick_feeds(cands: dict, line_days: dict[str, pl.DataFrame]) -> dict[str, list[dt.date]]:
@@ -260,24 +336,24 @@ class Data:
                     break
         return pick
 
-    def network(self, line: str, dates, registry=None):
-        """microsegments Network of ``line`` on ``dates`` assembled from the per-sha tables."""
+    def network(self, line: str, dates, registry=None, geometry: bool = True):
+        """microsegments Network of ``line`` on ``dates`` assembled from the per-sha tables (without
+        ``geometry``: null shapes, for what only needs stops and lengths)."""
         from microsegments.network import KeyRegistry, Network
         from microsegments.network.patterns import PATTERN_DAY_EXTRA
         from microsegments import schema
 
         line = str(line)
         cands = self.candidate_shas(dates)
-        tables = self._feed_tables(sorted({x for c in cands.values() for x in c}))
+        tables = self._feed_tables(sorted({x for c in cands.values() for x in c}), line, geometry)
         # this line's pattern days per feed, then for each date the first feed that runs the line
-        line_days = {sha: t["pattern_days"].filter(pl.col("line") == line) for sha, t in tables.items() if t is not None}
+        line_days = {sha: t["pattern_days"] for sha, t in tables.items() if t is not None}
         pats, links, stops, days = [], [], [], []
         for sha, mine in self._pick_feeds(cands, line_days).items():
             t = tables[sha]
-            p = t["patterns"].filter(pl.col("line") == line)
-            pats.append(p)
-            links.append(t["links"].filter(pl.col("pattern_uid").is_in(p["pattern_uid"].implode())))
-            stops.append(t["stops"].filter(pl.col("line") == line))
+            pats.append(t["patterns"])
+            links.append(t["links"])
+            stops.append(t["stops"])
             days.append(line_days[sha].filter(pl.col("service_date").is_in(mine)))
         pd_schema = {**schema.PATTERN_DAY, **PATTERN_DAY_EXTRA}
         if not pats:
@@ -307,16 +383,23 @@ class Data:
             return pl.DataFrame()
         return pl.concat(frames).filter(pl.col("service_date").is_in(ds))
 
-    def _line_months(self, kind: str, line: str, dates) -> pl.DataFrame | None:
+    def _line_months(self, kind: str, line: str, dates, columns: list[str] | None = None) -> pl.DataFrame | None:
         ds = sorted(set(dates))
         if not ds:
             return None
         rels = [derived(f"{kind}/line={line}/month={m}.parquet") for m in months_of(ds)]
-        frames = [f.filter(pl.col("service_date").is_in(ds)) for f in self.read_many(rels) if f is not None]
+        frames = [f.filter(pl.col("service_date").is_in(ds)) for f in self.read_many(rels, columns) if f is not None]
         return pl.concat(frames, how="diagonal_relaxed") if frames else None
 
-    def placed(self, line: str, dates) -> pl.DataFrame | None:
-        return self._line_months("placed", line, dates)
+    def placed(self, line: str, dates, columns: list[str] | None = None) -> pl.DataFrame | None:
+        return self._line_months("placed", line, dates, columns)
+
+    def placed_blobs(self, line: str, dates) -> dict[str, bytes]:
+        """month -> the line's placed file of that month, as Parquet bytes (several times smaller than
+        the frame: an analysis decodes one month at a time)."""
+        months = months_of(dates)
+        got = self._map(self._read_bytes_optional, [derived(f"placed/line={line}/month={m}.parquet") for m in months])
+        return {m: b for m, b in zip(months, got) if b is not None}
 
     def passages(self, line: str, dates) -> pl.DataFrame | None:
         return self._line_months("passages", line, dates)
@@ -350,7 +433,7 @@ class Data:
         if not ds:
             return "-"
         ing = [d for d in self.ingested_dates() if ds[0] <= d <= ds[-1]]
-        return "|".join([ing[-1].isoformat() if ing else "-"] + [self.month_stamp(m) for m in months_of(ds)])
+        return "|".join([ing[-1].isoformat() if ing else "-"] + self._map(self.month_stamp, months_of(ds)))
 
     def line_months(self) -> dict[str, list[str]]:
         """line -> months with a placed file."""

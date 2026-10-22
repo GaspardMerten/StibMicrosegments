@@ -18,14 +18,22 @@ TYPICAL_MIN_OBS = 20     # an hour "normally has" the line when its median count
 DQ_HOURS = (6, 20)       # hours a day is judged on (inclusive), as the package's Quality
 
 
+def hour_counts(placed: pl.DataFrame) -> pl.DataFrame:
+    """(service_date, hour, len): the line's rows per hour (months of a period add up)."""
+    return placed.group_by("service_date", "hour").len().with_columns(pl.col("hour").cast(pl.Int8))
+
+
 def line_absent(placed: pl.DataFrame, dates) -> pl.DataFrame:
     """(service_date, hour) where the feed was polled but carried no row of the line while that
     hour normally has it (median over the period >= TYPICAL_MIN_OBS). Partial source days exist
     (2025-03-31: 15 lines of ~80 in the feed); feed-level coverage cannot see them. ``dates``: the
     ingested dates only (a date without data would pull the median down)."""
+    return _absent(hour_counts(placed), dates)
+
+
+def _absent(n: pl.DataFrame, dates) -> pl.DataFrame:
     grid = pl.DataFrame({"service_date": list(dates)}, schema={"service_date": pl.Date}).join(
         pl.DataFrame({"hour": pl.Series(range(4, 28), dtype=pl.Int8)}), how="cross")
-    n = placed.group_by("service_date", "hour").len().with_columns(pl.col("hour").cast(pl.Int8))
     g = grid.join(n, on=["service_date", "hour"], how="left").with_columns(pl.col("len").fill_null(0))
     typ = g.group_by("hour").agg(pl.col("len").median().alias("typ"))
     return (g.join(typ, on="hour").filter((pl.col("len") == 0) & (pl.col("typ") >= TYPICAL_MIN_OBS))
@@ -33,9 +41,14 @@ def line_absent(placed: pl.DataFrame, dates) -> pl.DataFrame:
 
 
 def with_line_absence(cov: pl.DataFrame, placed: pl.DataFrame, dates) -> pl.DataFrame:
+    return with_absence(cov, hour_counts(placed), dates)
+
+
+def with_absence(cov: pl.DataFrame, counts: pl.DataFrame, dates) -> pl.DataFrame:
+    """``cov`` with LINE_ABSENT on the hours :func:`line_absent` finds, from :func:`hour_counts`."""
     if not cov.height:
         return cov
-    ab = line_absent(placed, dates).with_columns(pl.lit(True).alias("_ab"))
+    ab = _absent(counts, dates).with_columns(pl.lit(True).alias("_ab"))
     return (cov.join(ab, on=["service_date", "hour"], how="left")
             .with_columns(pl.when(pl.col("_ab")).then(pl.col("flags") | LINE_ABSENT).otherwise(pl.col("flags"))
                           .cast(cov.schema["flags"]).alias("flags"))
@@ -79,12 +92,13 @@ def coverage_days(data: Data, line: str, first: dt.date, last: dt.date) -> list[
     qual = Quality()
     ing = set(data.ingested_dates())
     dates = date_range(first, last)
-    placed = data.placed(line, dates)
+    placed = data.placed(line, dates, columns=["service_date", "hour"])   # rows per hour only
+    n = hour_counts(placed) if placed is not None else None
     cov = data.coverage(dates)
-    if placed is not None:
-        cov = with_line_absence(cov, placed, [d for d in dates if d in ing])
+    if n is not None:
+        cov = with_absence(cov, n, [d for d in dates if d in ing])
     per = _per_day(cov, qual.min_hour_coverage)
-    obs = dict(placed.group_by("service_date").len().iter_rows()) if placed is not None else {}
+    obs = dict(n.group_by("service_date").agg(pl.col("len").sum()).iter_rows()) if n is not None else {}
     hd = hol.between(first, last)
     try:
         cats = schedule.categories(data, first, last)

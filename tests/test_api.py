@@ -494,3 +494,87 @@ def test_day_status_counts_an_hour_once():
     per = _per_day(cov, 0.8)
     assert per[d][1:] == (3, 3, 3)
     assert _status(d, {d}, {"2025-03": ""}, per[d], 100, 0.25 + 1e-9) == "ok"
+
+
+def test_coverage_and_versions_cached(client, derived_root):
+    from stibms import api
+    for kind in ("coverage", "versions"):
+        r = client.get(f"/api/{kind}?{Q}")
+        assert r.status_code == 200 and r.headers["x-cache"] in ("computed", "bucket")   # earlier tests share the bucket
+        assert client.get(f"/api/{kind}?{Q}").headers["x-cache"] == "memory"
+        assert list((derived_root / "results").rglob(f"{kind}-r{api.RESULT_REV}-*.json.gz"))
+    api.state.blobs.clear()
+    assert client.get(f"/api/versions?{Q}").headers["x-cache"] == "bucket"
+
+
+def test_gzip_once(client):
+    page = client.get("/", headers={"Accept-Encoding": "gzip"})
+    assert page.headers["content-encoding"] == "gzip" and "<html" in page.text.lower()
+    r = client.get(f"/api/coverage?{Q}", headers={"Accept-Encoding": "gzip"})
+    assert r.headers["content-encoding"] == "gzip" and len(r.json()["days"]) == 8   # decoded once
+    plain = client.get(f"/api/coverage?{Q}", headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in plain.headers and plain.json() == r.json()
+
+
+def test_rev_from_metadata():
+    from importlib.metadata import version
+    from stibms.api import RESULT_REV, rev
+    assert rev() == f"{version('microsegments')}-{RESULT_REV}"
+
+
+def test_json_analysis_keeps_no_run(client):
+    from stibms import api
+    assert client.get(f"/api/analysis?{Q}&seg=40").status_code == 200
+    assert not api.state.runs.d
+    assert client.get(f"/api/analysis.csv?{Q}&seg=40").status_code == 200
+    (r,) = api.state.runs.d.values()
+    assert not hasattr(r, "placed")
+
+
+def test_line_tables_sliced_and_read_once(derived_root, monkeypatch):
+    import threading
+    from stibms.data import Data
+    data = Data(str(derived_root))
+    sha = data.gtfs_index()["sha"][0]
+    reads, real = [], data.store.read_parquet
+
+    def counting(rel, **kw):
+        reads.append(rel)
+        return real(rel, **kw)
+    monkeypatch.setattr(data.store, "read_parquet", counting)
+    ts = [threading.Thread(target=data.line_tables, args=(sha, "S1", False)) for _ in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len(reads) == 4          # one read of each table, not one per thread
+    t = data.line_tables(sha, "S1", False)
+    assert len(reads) == 4 and t["patterns"]["line"].unique().to_list() == ["S1"]
+    assert t["links"]["geometry"].null_count() == t["links"].height
+    g = data.line_tables(sha, "S1")
+    assert g["links"]["geometry"].null_count() == 0
+    net = data.network("S1", data.ingested_dates(), geometry=False)
+    assert net.links.height == data.network("S1", data.ingested_dates()).links.height
+
+
+def test_sized_lru():
+    from stibms.data import SizedLRU
+    c = SizedLRU(10)
+    c.put("a", 1, 4)
+    c.put("b", 2, 4)
+    c.get("a")
+    c.put("c", 3, 4)            # over 10 bytes: the least recently used goes
+    assert c.get("b") is None and c.get("a") == 1 and c.get("c") == 3 and c.size == 8
+
+
+def test_monthly_count_is_whole_count(derived_root):
+    from microsegments.aggregate import count
+    from stibms import analysis as A
+    from stibms.data import Data
+    data = Data(str(derived_root))
+    q = A.Query(line="S1", first=dt.date(2025, 5, 26), last=dt.date(2025, 6, 2), dow=tuple(range(7)))
+    ld = A.load(data, "S1", A.clamp(data, q.first, q.last))
+    assert len(ld.blobs) == 2      # May and June
+    segs = A._segments(ld, q)
+    whole = count(A.placed(ld), segs, A._params(q).tick_s)
+    assert A._count(ld, segs, q).equals(whole)

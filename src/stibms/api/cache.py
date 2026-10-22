@@ -17,14 +17,20 @@ SHORT_CACHE = "public, max-age=300"
 
 # Bump when the JSON a result holds changes without the data changing (page options such as
 # show_hotspots, contract fields): older bucket results are then ignored instead of served.
-RESULT_REV = 7
+# 8: line absence over ingested days only (a refactor changed it under 7); coverage and versions cached.
+RESULT_REV = 8
 
 
 def rev() -> str:
     """Release token added to the pages' API calls (``rev=``, ignored by the API): a new release (package
-    or RESULT_REV) changes every URL, so browsers do not reuse responses cached under an older one."""
-    from .. import ms
-    return f"{ms.version()}-{RESULT_REV}"
+    or RESULT_REV) changes every URL, so browsers do not reuse responses cached under an older one.
+    Read from the package metadata: importing the package costs the cold home page seconds."""
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return f"{version('microsegments')}-{RESULT_REV}"
+    except PackageNotFoundError:
+        from .. import ms
+        return f"{ms.version()}-{RESULT_REV}"
 
 
 def stamp(data, ranges: list[tuple[dt.date, dt.date]]) -> str:
@@ -81,7 +87,9 @@ def _bucket_or_compute(data, key: str, compute) -> tuple[bytes, str]:
     from ..data import ALGO_VERSION
     rel = f"results/v{ALGO_VERSION}/{key}.json.gz"
     try:
-        gz = data.store.read_bytes(rel) if data.store.exists(rel) else None
+        gz = data.store.read_bytes(rel)      # one request: a missing object is the miss
+    except FileNotFoundError:
+        gz = None
     except Exception:  # noqa: BLE001 - a cache miss, not an error
         log.warning("result cache read failed for %s", rel, exc_info=True)
         gz = None
@@ -113,19 +121,20 @@ def cached_json(kind: str, q, compute, request: Request, *extra) -> Response:
     return gz_response(request, gz, cache_control(data, q.last, q), extra={"X-Cache": src})
 
 
-def cached_run(q):
-    """The analysis Run of ``q`` (in-process LRU; computed under HEAVY)."""
+def compute_run(q):
+    """The analysis Run of ``q``, computed under HEAVY (NotFound: 404)."""
     from .. import analysis as A
-    data = state.data
-    key = q.key(data_stamp(data, q))
+    try:
+        with HEAVY:
+            return A.run(state.data, q)
+    except A.NotFound as e:
+        raise HTTPException(404, str(e))
 
-    def compute():
-        try:
-            with HEAVY:
-                return A.run(data, q)
-        except A.NotFound as e:
-            raise HTTPException(404, str(e))
-    return state.once(state.runs, key, compute, lock="run-" + key)
+
+def cached_run(q):
+    """The analysis Run of ``q`` for the tables, hotspots and tuning (in-process LRU, MS_RUN_CACHE)."""
+    key = q.key(data_stamp(state.data, q))
+    return state.once(state.runs, key, lambda: compute_run(q), lock="run-" + key)
 
 
 def table_response(df, fmt: str, name: str, cc: str) -> Response:

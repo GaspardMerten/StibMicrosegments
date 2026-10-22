@@ -67,8 +67,8 @@ def days_canonical(q, first: dt.date, last: dt.date) -> dict:
 
 
 def uses_schedule(q) -> bool:
-    """True when ``q`` leaves out GTFS service categories (they move with new feeds)."""
-    return "exclude" in (getattr(q, "school", "include"), getattr(q, "reduced", "include"))
+    """True when ``q`` leaves out or shows GTFS service categories (they move with new feeds)."""
+    return getattr(q, "schedule", False) or "exclude" in (getattr(q, "school", "include"), getattr(q, "reduced", "include"))
 
 
 @dataclass(frozen=True)
@@ -159,6 +159,28 @@ class CompareQuery:
         d["a"] = [self.a[0].isoformat(), self.a[1].isoformat()]
         d["b"] = [self.b[0].isoformat(), self.b[1].isoformat()]
         return d
+
+    def key(self, *extra) -> str:
+        return digest([self.canonical(), ALGO_VERSION, ms.version(), *extra])
+
+
+@dataclass(frozen=True)
+class PeriodQuery:
+    """A line over a period without analysis parameters (coverage, route versions), for the result
+    cache. ``back``: days before ``first`` the result also reads (the stamp covers them);
+    ``schedule``: the result shows the GTFS service categories."""
+    line: str
+    first: dt.date
+    last: dt.date
+    back: int = 0
+    schedule: bool = False
+
+    @property
+    def ranges(self) -> list[tuple[dt.date, dt.date]]:
+        return [(self.first - dt.timedelta(days=self.back), self.last)]
+
+    def canonical(self) -> dict:
+        return {"line": self.line, "first": self.first.isoformat(), "last": self.last.isoformat()}
 
     def key(self, *extra) -> str:
         return digest([self.canonical(), ALGO_VERSION, ms.version(), *extra])

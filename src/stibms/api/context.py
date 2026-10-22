@@ -61,7 +61,7 @@ class State:
     def __init__(self):
         self._data = None
         self.warming: threading.Thread | None = None
-        self.runs = _LRU(int(os.environ.get("MS_RUN_CACHE", "6")))      # Run objects (arrays, heavy)
+        self.runs = _LRU(int(os.environ.get("MS_RUN_CACHE", "1")))      # Run objects (tables, tuning)
         self.blobs = _LRU(int(os.environ.get("MS_BLOB_CACHE", "128")))  # gzipped JSON
         self._locks: dict[str, threading.Lock] = {}
         self._lk = threading.Lock()
@@ -117,6 +117,7 @@ def _warm() -> None:
         data = state.data
         ing = data.ingested_dates()
         data.derived_months()
+        data.line_months()          # /api/lines: one listing of the placed files
         if ing:
             stamp(data, [(ing[-1].replace(day=1), ing[-1])])
         log.info("warm in %.2f s", time.time() - t)

@@ -157,7 +157,7 @@ def _runs(net) -> list[dict]:
 def _line_runs(data: Data, line: str, dates: list[dt.date]) -> list[dict]:
     if not dates:
         return []
-    net = data.network(line, dates)
+    net = data.network(line, dates, geometry=False)    # stops and link lengths only
     return _runs(net) if net.pattern_days.height else []
 
 

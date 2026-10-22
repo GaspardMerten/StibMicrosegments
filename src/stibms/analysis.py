@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import io
 import time
 from dataclasses import dataclass, field
 
 import polars as pl
 
 from . import ms, schedule, stopzones
-from .coverage import with_line_absence
+from .coverage import hour_counts, with_absence
 from .data import ALGO_VERSION, Data, date_range, months_of
 from .queries import CompareQuery, Query  # noqa: F401 - the analysis' queries, re-exported
 
@@ -36,13 +37,14 @@ def _timed(tm: dict, name: str):
 
 @dataclass
 class Run:
+    """One analysis, without its placed rows (``tune`` reads them again)."""
     query: Query
+    dates: list[dt.date]
     holidays: dict[dt.date, tuple[str, str | None]]   # days left out on purpose: date -> (reason, label)
     net: object
     segments: pl.DataFrame
     analysis: object
     coverage: pl.DataFrame
-    placed: pl.DataFrame
     passages: pl.DataFrame | None
     timings: dict = field(default_factory=dict)
     zones: pl.DataFrame | None = None
@@ -79,12 +81,17 @@ def route_mode(data: Data, line: str, dates) -> str | None:
 
 @dataclass
 class Loaded:
-    """Derived inputs of one line on a set of dates (one read, shared by the periods of a comparison)."""
+    """Derived inputs of one line on a set of dates (one read, shared by the periods of a comparison).
+    The placed rows stay as their month files (``blobs``), decoded and prepared one month at a time
+    (:func:`placed_months`): a year of placed frames is gigabytes once prepared."""
     dates: list[dt.date]
-    placed: pl.DataFrame
+    blobs: dict[str, bytes]              # month -> placed Parquet file
+    uids: set[str]                       # pattern_uids with a placed row
+    seen: set[dt.date]                   # dates with a placed row
     passages: pl.DataFrame | None
     coverage: pl.DataFrame
     net: object
+    marks: pl.DataFrame                  # exit marks (stibms.stopzones)
     timings: dict = field(default_factory=dict)
     zones: pl.DataFrame | None = None    # (link_key, head_m): stop zone end after each stop (stibms.stopzones)
 
@@ -94,35 +101,66 @@ def not_derived_months(data: Data, dates) -> list[str]:
     return [m for m in months_of(dates) if m not in have]
 
 
+def _decode(blob: bytes, dates, columns: list[str] | None = None) -> pl.DataFrame:
+    return pl.read_parquet(io.BytesIO(blob), columns=columns).filter(pl.col("service_date").is_in(dates))
+
+
+def _scan(blobs: dict[str, bytes], dates) -> tuple[pl.DataFrame, set, set]:
+    """Rows per (date, hour), pattern_uids and dates of the placed files, a few columns at a time."""
+    counts, uids, seen = [], set(), set()
+    for b in blobs.values():
+        f = _decode(b, dates, ["service_date", "hour", "pattern_uid"])
+        counts.append(hour_counts(f))
+        uids |= set(f["pattern_uid"].drop_nulls().unique().to_list())
+        seen |= set(f["service_date"].unique().to_list())
+    return (pl.concat(counts) if counts else pl.DataFrame(schema={"service_date": pl.Date, "hour": pl.Int8, "len": pl.UInt32}),
+            uids, seen)
+
+
 def load(data: Data, line: str, dates: list[dt.date], label: str = "cette période") -> Loaded:
     t = time.time()
     if not dates:
         raise NotFound(f"aucune donnée ingérée pour {label}")
-    placed = data.placed(line, dates)
-    if placed is None or not placed.height:
+    blobs = data.placed_blobs(line, dates)
+    counts, uids, seen = _scan(blobs, dates)
+    if not seen:
         pending = not_derived_months(data, dates)
         if pending:
             raise NotFound(f"données en cours de préparation pour {label} (mois {', '.join(pending)} pas encore calculés)")
         raise NotFound(f"aucun signalement de la ligne {line} pour {label}")
     passages = data.passages(line, dates)
     ing = set(data.ingested_dates())     # gaps in the collection are no hours without the line
-    cov = with_line_absence(data.coverage(dates), placed, [d for d in dates if d in ing])
+    cov = with_absence(data.coverage(dates), counts, [d for d in dates if d in ing])
     net = data.network(line, dates)
-    mk = exit_marks(data, line, dates, placed)
-    placed = stopzones.prepare(placed, net, mk)
-    return Loaded(dates, placed, passages, cov, net, {"load": round(time.time() - t, 3)}, zones=stopzones.heads(mk))
+    mk = exit_marks(data, line, dates, blobs)
+    return Loaded(dates, blobs, uids, seen, passages, cov, net, mk, {"load": round(time.time() - t, 3)},
+                  zones=stopzones.heads(mk))
 
 
-def exit_marks(data: Data, line: str, dates, placed: pl.DataFrame) -> pl.DataFrame:
+def placed_months(ld: Loaded):
+    """The prepared placed rows (``stopzones.prepare``), one month at a time."""
+    for b in ld.blobs.values():
+        yield stopzones.prepare(_decode(b, ld.dates), ld.net, ld.marks)
+
+
+def placed(ld: Loaded) -> pl.DataFrame:
+    """All prepared placed rows (segment-length tuning)."""
+    return pl.concat(list(placed_months(ld)))
+
+
+MARK_COLS = ["ts", "service_date", "pattern_uid", "link_idx", "link_key", "raw_dist_m", "track_id", "flags"]
+
+
+def exit_marks(data: Data, line: str, dates, blobs: dict[str, bytes]) -> pl.DataFrame:
     """The line's exit marks over the months of ``dates`` (written with the link cubes), learned from
-    ``placed`` for a month without a marks file (not yet derived)."""
+    the placed files ``blobs`` for the months without a marks file (not yet derived)."""
     from .linkcube import rel
     months = months_of(dates)
     got = data.read_many([rel(m, "marks") for m in months])
     parts = [f.filter(pl.col("line") == line) for f in got if f is not None and f.height]
-    missing = [m for m, f in zip(months, got) if f is None]
+    missing = [m for m, f in zip(months, got) if f is None and m in blobs]
     if missing:
-        sub = placed.filter(pl.col("service_date").dt.strftime("%Y-%m").is_in(missing))
+        sub = pl.concat([_decode(blobs[m], dates, MARK_COLS) for m in missing])
         parts.append(stopzones.marks(sub, line))
     return pl.concat(parts, how="vertical_relaxed").unique() if parts else pl.DataFrame(schema=stopzones.MARKS_SCHEMA)
 
@@ -134,8 +172,7 @@ def _stop_zone(q) -> tuple[float, float]:
 
 def _segments(ld: Loaded, q) -> pl.DataFrame:
     from microsegments.segments import segment
-    uids = sorted(set(ld.placed["pattern_uid"].drop_nulls().unique().to_list())
-                  | set(ld.net.pattern_days.filter(pl.col("is_main"))["pattern_uid"].unique().to_list()))
+    uids = sorted(ld.uids | set(ld.net.pattern_days.filter(pl.col("is_main"))["pattern_uid"].unique().to_list()))
     return segment(ld.net, q.seg, q.phase, q.grid, _stop_zone(q), patterns=uids,
                    zones=ld.zones if q.grid == "stops" else None)
 
@@ -161,19 +198,26 @@ def _analyse(data: Data, cube, ld: Loaded, segs, q, dates: list[dt.date]):
                    _params(q), Quality()), hd
 
 
-def run(data: Data, q: Query) -> Run:
+def _count(ld: Loaded, segs, q) -> pl.DataFrame:
+    """The cube of ``ld``, counted month by month: counts of different days add up, and the months'
+    cubes (each sorted, service_date first) in month order are the sorted cube."""
     from microsegments.aggregate import count
+    tick = _params(q).tick_s
+    return pl.concat([count(p, segs, tick) for p in placed_months(ld)])
+
+
+def run(data: Data, q: Query) -> Run:
     dates = clamp(data, q.first, q.last)
     ld = load(data, q.line, dates)
     tm = dict(ld.timings)
     with _timed(tm, "segment"):
         segs = _segments(ld, q)
     with _timed(tm, "count"):
-        cube = count(ld.placed, segs, _params(q).tick_s)
+        cube = _count(ld, segs, q)
     with _timed(tm, "analyse"):
         an, hd = _analyse(data, cube, ld, segs, q, dates)
-    return Run(query=q, holidays=hd, net=ld.net, segments=segs, analysis=an, coverage=ld.coverage,
-               placed=ld.placed, passages=ld.passages, timings=tm, zones=ld.zones, mode=route_mode(data, q.line, dates))
+    return Run(query=q, dates=dates, holidays=hd, net=ld.net, segments=segs, analysis=an, coverage=ld.coverage,
+               passages=ld.passages, timings=tm, zones=ld.zones, mode=route_mode(data, q.line, dates))
 
 
 def _relabel(excluded: list[dict], days: dict) -> None:
@@ -229,7 +273,7 @@ def _compare_dates(data: Data, cq: CompareQuery) -> tuple[list[dt.date], list[dt
 
 
 def _check_seen(data: Data, cq: CompareQuery, ld: Loaded, da: list[dt.date], db: list[dt.date]) -> None:
-    seen = set(ld.placed["service_date"].unique().to_list())
+    seen = ld.seen
     for lab, ds in (("période A", da), ("période B", db)):
         if not seen & set(ds):
             pending = not_derived_months(data, ds)
@@ -242,7 +286,6 @@ def run_compare(data: Data, cq: CompareQuery) -> dict:
     periods (one network, one segmentation, so segment keys agree), one count, one analysis per
     period on its own days, then ``compare``. Returns period B's contract plus the ``compare``
     section (the package page opens in its comparison view)."""
-    from microsegments.aggregate import count
     from microsegments.compare import compare
     from microsegments.hotspots import hotspot_status, hotspots
     from microsegments.report import name_map
@@ -253,7 +296,7 @@ def run_compare(data: Data, cq: CompareQuery) -> dict:
     _check_seen(data, cq, ld, da, db)
     with _timed(tm, "segment_count"):
         segs = _segments(ld, cq)
-        cube = count(ld.placed, segs, _params(cq).tick_s)
+        cube = _count(ld, segs, cq)
     with _timed(tm, "analyse"):
         an_a, hd_a = _analyse(data, cube, ld, segs, cq, da)
         an_b, hd_b = _analyse(data, cube, ld, segs, cq, db)
@@ -281,8 +324,9 @@ def result_table(r: Run) -> pl.DataFrame:
     return out.with_columns(pl.lit(r.query.line).alias("line"))
 
 
-def tune(r: Run, lengths: tuple[float, ...], B: int) -> dict:
-    """Segment-length criteria of the run's analysis (``microsegments.tune.segment_length``)."""
+def tune(data: Data, r: Run, lengths: tuple[float, ...], B: int) -> dict:
+    """Segment-length criteria of the run's analysis (``microsegments.tune.segment_length``), on its
+    placed rows read again."""
     from microsegments.report import frame_records
     from microsegments.segments import segment
     from microsegments.tune import segment_length
@@ -293,7 +337,7 @@ def tune(r: Run, lengths: tuple[float, ...], B: int) -> dict:
     def seg_fn(L, phase=0.0, stop_zone=an.params.stop_zone):
         return segment(net, L, phase, q.grid, stop_zone, patterns=uids, geometry=False,
                        zones=r.zones if q.grid == "stops" else None)
-    res = segment_length(r.placed, seg_fn, lengths, coverage=r.coverage if r.coverage.height else None,
+    res = segment_length(placed(load(data, q.line, r.dates)), seg_fn, lengths, coverage=r.coverage if r.coverage.height else None,
                          passages=r.passages, pattern_days=net.pattern_days, select=an.select,
                          params=an.params, quality=an.quality, B=B)
     return {"line": q.line, "query": q.canonical(), "lengths": list(lengths), "B": B,

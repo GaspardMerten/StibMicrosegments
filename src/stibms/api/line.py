@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query as Q, Request
-from fastapi.responses import JSONResponse
 
-from .cache import cache_control, cached_json, cached_run, table_response
+from .cache import cache_control, cached_json, cached_run, compute_run, table_response
 from .context import state
 from .params import compare_query, period, query
 
@@ -12,10 +11,12 @@ router = APIRouter()
 TABLES = ("csv", "parquet")
 
 
-def _period_json(p, key: str, rows) -> JSONResponse:
+def _period_json(request: Request, kind: str, p, key: str, rows, **kw):
+    """``{line, from, to, key: rows()}`` through the result cache (``kw``: PeriodQuery options)."""
+    from ..queries import PeriodQuery
     line, a, b = p
-    return JSONResponse({"line": line, "from": a.isoformat(), "to": b.isoformat(), key: rows},
-                        headers={"Cache-Control": cache_control(state.data, b)})
+    q = PeriodQuery(line, a, b, **kw)
+    return cached_json(kind, q, lambda: {"line": line, "from": a.isoformat(), "to": b.isoformat(), key: rows()}, request)
 
 
 def _fname(q, what: str) -> str:
@@ -29,15 +30,15 @@ def _table(fmt: str, q, what: str, frame):
 
 
 @router.get("/api/coverage")
-def coverage(p=Depends(period)):
+def coverage(request: Request, p=Depends(period)):
     from ..coverage import coverage_days
-    return _period_json(p, "days", coverage_days(state.data, *p))
+    return _period_json(request, "coverage", p, "days", lambda: coverage_days(state.data, *p), schedule=True)
 
 
 @router.get("/api/versions")
-def versions(p=Depends(period)):
-    from ..versions import versions as route_versions
-    return _period_json(p, "versions", route_versions(state.data, *p))
+def versions(request: Request, p=Depends(period)):
+    from ..versions import LOOKBACK_DAYS, versions as route_versions
+    return _period_json(request, "versions", p, "versions", lambda: route_versions(state.data, *p), back=LOOKBACK_DAYS)
 
 
 @router.get("/api/analysis")
@@ -45,7 +46,7 @@ def analysis(request: Request, q=Depends(query)):
     from .. import analysis as A
 
     def compute():
-        r = cached_run(q)
+        r = compute_run(q)     # not kept: the JSON is, and a year of a line is gigabytes while computed
         c = A.contract(r)
         c["timings"] = r.timings
         return c
@@ -82,7 +83,7 @@ def tune(request: Request, q=Depends(query), lengths: str = Q("15,20,30,40,50,75
         raise HTTPException(422, "lengths: 1 to 10 values within 5..500")
     B = max(10, min(int(B), 200))
     # the cache key carries the tune parameters too
-    return cached_json("tune", q, lambda: tune_lengths(cached_run(q), Ls, B), request, "tune", Ls, B)
+    return cached_json("tune", q, lambda: tune_lengths(state.data, cached_run(q), Ls, B), request, "tune", Ls, B)
 
 
 @router.get("/api/compare")
