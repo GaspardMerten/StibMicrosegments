@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>STIB microsegments</title>
-<meta name="description" content="Où les trams, bus et métros de la STIB perdent-ils du temps ? Vitesse moyenne des véhicules sur chaque tronçon de 30 m, comparaison de périodes et classement du réseau.">
+<meta name="description" content="Où les trams, bus et métros de la STIB perdent-ils du temps ? Vitesse moyenne des véhicules sur chaque segment de 30 m, comparaison de périodes et classement du réseau.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -22,6 +22,11 @@
       <a href="/classement" data-tab="rank">Classement du réseau</a>
     </nav>
   </div>
+</div>
+
+<!-- the selection, fixed at the top once the form is out of view (sel.js) -->
+<div class="selbar" id="selbar" inert>
+  <div class="wrap"><button type="button" class="selbtn" id="selbtn" aria-expanded="false" aria-label="Sélection affichée : modifier"></button></div>
 </div>
 
 <main class="wrap">
@@ -105,6 +110,7 @@
 <link rel="modulepreload" href="/static/lineview.js?rev=__REV__">
 <link rel="modulepreload" href="/static/lines.js?rev=__REV__">
 <link rel="modulepreload" href="/static/rank.js?rev=__REV__">
+<link rel="modulepreload" href="/static/sel.js?rev=__REV__">
 <script type="module" src="/static/main.js?rev=__REV__"></script>
 </body>
 </html>

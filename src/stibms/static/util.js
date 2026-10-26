@@ -64,8 +64,20 @@ export function busy(el, msg, hint) {
   const t0 = performance.now();
   const draw = () => {
     const s = Math.round((performance.now() - t0) / 1000);
-    el.className = ""; el.innerHTML = `<span class="spin"></span><span>${msg}${s >= 2 ? ` · ${s} s` : ""}${s >= 6 && hint ? ` — ${hint}` : ""}</span>`;
+    el.className = ""; el.innerHTML = `<span class="spin"></span><span>${msg}${s >= 2 ? ` · ${s} s` : ""}${s >= 6 && hint ? ` · ${hint}` : ""}</span>`;
   };
   draw(); el._timer = setInterval(draw, 1000);
 }
 export function done(el, msg, err) { clearInterval(el._timer); el.className = err ? "err" : ""; el.innerHTML = msg ? `<span>${msg}</span>` : ""; }
+
+// ---------------------------------------------------------------- selection changed
+// the sticky selection bar (sel.js) redraws on this event; run: a new analysis or ranking started
+// (the bar's open panel closes)
+export const selChanged = run => document.dispatchEvent(new CustomEvent("ms:sel", {detail: {run: !!run}}));
+// the weekdays ticked, in words: "Lu–Ve", "Lu, Me, Ve", "tous les jours"
+export function dowText(el) {
+  const v = [...el.querySelectorAll("input:checked")].map(x => +x.value);
+  if (!v.length || v.length === 7) return v.length ? "tous les jours" : "Lu–Ve";
+  const run = v.length > 2 && v.every((x, i) => i === 0 || x === v[i - 1] + 1);
+  return run ? `${DOW[v[0]]}–${DOW[v[v.length - 1]]}` : v.map(i => DOW[i]).join(", ");
+}

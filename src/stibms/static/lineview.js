@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------- direction (Sens), global
 // The analysis page in the frame tells its directions ({ms: "dirs"}); this control drives it with
 // {ms: "dir"} (no reload: both directions are already loaded) and keeps &dir= in the URL.
-import {$, REV, S, busy, detailText, done, dowGet, esc, getJSON} from "./util.js?rev=__REV__";
+import {$, REV, S, busy, detailText, done, dowGet, esc, getJSON, selChanged} from "./util.js?rev=__REV__";
 import {XL} from "./excl.js?rev=__REV__";
 import {dowsSel, setQuality, setSummary} from "./quality.js?rev=__REV__";
 import {excludeRoutes, showRoutes} from "./routes.js?rev=__REV__";
@@ -11,12 +11,14 @@ function drawSens(dirs, cur) {
   if (!dirs || dirs.length < 2) { $("sensfld").hidden = true; return; }
   $("sensfld").hidden = false;
   $("sens").innerHTML = dirs.map(d => `<button type="button" data-dir="${d.dir}" aria-pressed="${d.dir === cur}">vers ${esc(d.to)}</button>`).join("");
+  selChanged();
 }
 function setDir(d, send) {
   S.dir = d;
   $("sens").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.dir === d)));
   const u = new URLSearchParams(location.search); u.set("dir", d);
   history.replaceState(null, "", location.pathname + "?" + u);
+  selChanged();
   if (send && FRAME && FRAME.contentWindow) FRAME.contentWindow.postMessage({ms: "dir", dir: d}, "*");
 }
 // the frame's directions ({ms: "dirs"}): keep the chosen one when the line has it
@@ -49,6 +51,7 @@ export async function runLine() {
   const pu = new URLSearchParams(p); if (S.dir != null) pu.set("dir", S.dir);
   history.replaceState(null, "", location.pathname + "?" + pu);
   const me = ++RUN;
+  selChanged(true);
   $("go").disabled = true; $("notes").innerHTML = ""; setQuality(null); showRoutes(null);
   busy($("status"), S.tab === "cmp" ? `Comparaison de la ligne ${esc(line)}` : `Calcul de la ligne ${esc(line)}`,
     S.tab === "cmp" ? "une comparaison prend jusqu'à une minute la première fois" : "la première fois, quelques mois prennent 10 à 40 s");
@@ -80,11 +83,17 @@ function frameError(doc) {
   const t = ((doc.body && doc.body.textContent) || "").trim();
   try { return detailText(JSON.parse(t).detail) || t; } catch (e) { return t || "HTTP error"; }
 }
+// the line's GTFS colours for the frame's title badge (lc, ltc: hex without "#"; the loader takes them
+// off the API query and hands them to the page as route_color / route_text_color)
+function colorParams(line) {
+  const l = S.lines.find(x => x.line === line), hex = v => /^[0-9a-f]{6}$/i.test(v || "") ? v : "";
+  return l && hex(l.color) ? `&lc=${l.color}&ltc=${hex(l.text_color) || "FFFFFF"}` : "";
+}
 // the analysis page in a frame; settles on its "ready" or "error" message, or when it loads without the page
 function showFrame(p, me) {
   if (OFF_FRAME) OFF_FRAME();
   return new Promise(resolve => {
-    $("view").innerHTML = `<iframe src="/view?${p}&rev=${REV}" scrolling="no" allowfullscreen title="Analyse de la ligne ${esc(p.get("line"))}"></iframe>`;
+    $("view").innerHTML = `<iframe src="/view?${p}${colorParams(p.get("line"))}&rev=${REV}" scrolling="no" allowfullscreen title="Analyse de la ligne ${esc(p.get("line"))}"></iframe>`;
     const fr = $("view").querySelector("iframe");
     FRAME = fr;
     let settled = false;

@@ -4,6 +4,7 @@ import {XL, XR} from "./excl.js?rev=__REV__";
 import {lineOf, presetState, presets, setLine} from "./lines.js?rev=__REV__";
 import {runLine} from "./lineview.js?rev=__REV__";
 import {runRank} from "./rank.js?rev=__REV__";
+import {selTab} from "./sel.js?rev=__REV__";
 
 // ---------------------------------------------------------------- tabs + URL state
 function setTab(t) {
@@ -14,6 +15,7 @@ function setTab(t) {
   $("go").textContent = t === "cmp" ? "Comparer" : "Afficher";
   document.title = {one: "Une ligne", cmp: "Comparer deux périodes", rank: "Classement du réseau"}[t] + " · STIB microsegments";
   presets();
+  selTab();
 }
 // the line asked for when it exists, else 55, else the first line with data
 function defaultLine(asked) {

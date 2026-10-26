@@ -196,6 +196,7 @@ def test_ranking(client):
     assert s[0]["lines"][0]["line"] == "S1" and s[0]["c"]
     assert {"veh_h_day_run", "veh_h_day_stop", "reasons", "link_keys"} <= set(s[0])
     assert "excluded" in res
+    assert all(x["veh_h_day"] > 0 for x in s)      # only stretches in loss
     both = client.get(q + "&stops=true&terminus=true").json()
     assert both["zones"] == "all" and both["excluded"]["n"] == 0
     assert client.get(q.replace("top=10", "top=10&mode=metro")).json()["lines_used"] == 0
@@ -673,3 +674,17 @@ def test_warm_skips_a_refused_request(client, monkeypatch):
     monkeypatch.setattr(warm, "default_lines", lambda data, only: [("S1", {"from": "2025-05-26", "to": "2025-05-27"})])
     monkeypatch.setattr(warm, "line_results", lambda ln, d, a: [(f"coverage {ln}", refuse(404))])
     assert warm.run() == {"failed": 1, "missing": 1}
+
+
+def test_ranking_lists_only_stretches_in_loss():
+    """No time lost anywhere (the metro between stations) gives no stretch, not a list of zeros (the
+    page's colour scale divided by 0)."""
+    import polars as pl
+    from stibms.ranking import _stretches
+    row = {"line": "1", "veh_s_day_run": 0.0, "veh_s_day_stop": -5.0, "passages_day": 100.0, "peak": "day",
+           "n_days": 20, "reason": None, "reg_share": None, "len_m": 600.0}
+    df = pl.DataFrame([{**row, "link_key": k, "from_t": a, "to_t": b, "veh_s_day": v}
+                       for k, a, b, v in [("a>b", "A", "B", 0.0), ("b>c", "B", "C", -3.0), ("c>d", "C", "D", 7200.0)]])
+    rows, tot, n = _stretches(df, 10, {}, 261)
+    assert [r["link_key"] for r in rows] == ["c>d"] and n == 1 and tot == 7200.0
+    assert _stretches(df.filter(pl.col("veh_s_day") <= 0), 10, {}, 261) == ([], 0.0, 0)

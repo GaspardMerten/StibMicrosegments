@@ -23,6 +23,28 @@ nav a[aria-current=page] { color:var(--ink); border-bottom-color:var(--acc); }
 nav a:hover { color:var(--ink); }
 @media (max-width:600px) { nav { margin-left:0; width:100%; } nav a { flex:1; text-align:center; padding:8px 6px 10px; } .brand { padding-bottom:4px; } }
 
+/* ---------------------------------------------------------------- sticky selection bar (sel.js) */
+.selbar { position:fixed; top:0; left:0; right:0; z-index:1500; background:var(--surface); border-bottom:1px solid var(--line);
+  box-shadow:0 8px 24px rgba(0,0,0,.35); transform:translateY(-110%); transition:transform .18s ease; }
+.selbar.on { transform:none; }
+@media (prefers-reduced-motion:reduce) { .selbar { transition:none; } }
+.selbtn { display:flex; align-items:center; gap:12px; width:100%; min-height:48px; padding:6px 0; background:none; border:0; cursor:pointer; text-align:left; }
+.selbtn:focus-visible { outline:2px solid #fff; outline-offset:-2px; }
+.sitems { display:flex; align-items:center; gap:4px 18px; flex:1; min-width:0; overflow:hidden; white-space:nowrap; font-size:14px; color:var(--ink); }
+.si { display:inline-flex; align-items:center; gap:6px; flex:none; font-variant-numeric:tabular-nums; }
+.si.sl { flex:0 1 auto; min-width:0; }
+.si .nm { color:var(--ink-2); overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.sk { font:500 10px/1 var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); }
+.si .pa, .si .pb { font-style:normal; margin:0; }
+.sedit { flex:none; color:var(--acc); font-weight:600; font-size:14px; }
+.sedit::after { content:" ▾"; }
+.selbar.open .sedit::after { content:" ▴"; }
+.selbtn:hover .sedit { text-decoration:underline; }
+/* the form opened from the bar: right under it, over the page (its place keeps its height) */
+form.float { position:fixed; z-index:1490; top:56px; left:50%; transform:translateX(-50%); width:min(1132px, calc(100vw - 32px));
+  max-height:calc(100vh - 72px); overflow:auto; box-shadow:0 18px 50px rgba(0,0,0,.55); }
+@media (max-width:600px) { .si .nm, .sk { display:none; } .si.sl { flex:none; } .sitems { gap:4px 12px; font-size:13px; } }
+
 /* ---------------------------------------------------------------- form */
 .bar { padding:16px 0 4px; }
 .lede { color:var(--ink-2); margin:0 0 14px; max-width:75ch; }
@@ -143,10 +165,10 @@ details.more .opts { display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:10p
 @media (max-width:700px) { #rkmap { height:380px; } }
 .rkgrid { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1.1fr); gap:16px; align-items:start; }
 .rkgrid > * { min-width:0; }
-@media (min-width:1000px) { .rkgrid .mapcol { position:sticky; top:12px; } }
+@media (min-width:1000px) { .rkgrid .mapcol { position:sticky; top:60px; } }    /* under the selection bar */
 @media (max-width:999px) { .rkgrid { grid-template-columns:1fr; } }
 .tbl { width:100%; border-collapse:collapse; font-size:14px; }
-.tbl th { text-align:left; font:500 11px/1.2 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); padding:6px 8px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--paper); }
+.tbl th { text-align:left; font:500 11px/1.2 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); padding:6px 8px; border-bottom:1px solid var(--line); position:sticky; top:48px; background:var(--paper); }
 .tbl td { padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
 .tbl td.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .tbl tr { cursor:pointer; }
@@ -185,6 +207,11 @@ details.more .opts { display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:10p
 }
 .rkicon { background:var(--acc); color:#111; font:700 11px/18px var(--sans); text-align:center; border-radius:50%; width:20px !important; height:20px !important; margin:-10px 0 0 -10px !important; border:1px solid #111; }
 .leaflet-container { font:13px var(--sans); }
+.rktip { background:var(--surface); color:var(--ink-2); border:1px solid var(--line); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.45); padding:7px 10px; font:13px/1.45 var(--sans); }
+.rktip b { display:block; color:var(--ink); font-weight:600; }
+.rktip .lines { display:flex; gap:3px; margin:4px 0; }
+.rktip .lb { min-width:24px; height:20px; font-size:12px; }
+.rktip::before { display:none; }
 .method { color:var(--ink-3); font-size:13px; max-width:90ch; margin:18px 0 40px; }
 footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px solid var(--line); margin-top:20px; }
 [hidden] { display:none !important; }

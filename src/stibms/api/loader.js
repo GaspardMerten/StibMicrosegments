@@ -8,6 +8,9 @@
   // "rev" (code version) is not a parameter: it only keeps browsers from reusing a response of an older
   // release; set, not added (the frame's own URL carries it already)
   q.set("rev", "__REV__");
+  // the line's GTFS colours (lc, ltc), from the platform's line list: for the page, not the API
+  var lc = q.get("lc"), ltc = q.get("ltc");
+  q.delete("lc"); q.delete("ltc");
   fetch(api + "?" + q).then(function (r) {
     // error bodies: FastAPI JSON (detail: a string, or a list of {msg}) or a proxy's HTML / text
     if (!r.ok) return r.text().then(function (t) {
@@ -20,6 +23,7 @@
     // the site's page options win over whatever an older cached response says (HTTP or bucket cache)
     var d = JSON.parse(txt);
     d.show_hotspots = false; d.dir_control = false; d.method = false; d.host_controls = true;
+    if (lc) { d.route_color = lc; d.route_text_color = ltc || "FFFFFF"; }
     document.getElementById("ms-data").textContent = JSON.stringify(d);
     var s = document.createElement("script");
     s.textContent = main.textContent;

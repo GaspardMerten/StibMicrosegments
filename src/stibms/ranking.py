@@ -48,7 +48,8 @@ from .stretches import merge_groups
 
 log = logging.getLogger("stibms.ranking")
 MODES = ("all", "tram", "bus", "metro")
-RANK_VERSION = 5      # bump when the ranking changes meaning (new cache keys); 5: excluded.n counts stretches
+RANK_VERSION = 6      # bump when the ranking changes meaning (new cache keys); 5: excluded.n counts stretches;
+                      # 6: only stretches in loss are listed
 DEFAULT_PTR = f"results/v{ALGO_VERSION}/ranking-default.json"
 DEFAULT_MONTHS = 1    # the default window: the last complete month (weekdays)
 MIN_DAYS = 5          # links seen on fewer usable days are left out (a short detour otherwise tops the list)
@@ -265,8 +266,9 @@ def _stretch_row(rank: int, r: dict, geo: dict, days_per_year: int) -> dict:
 
 
 def _stretches(df: pl.DataFrame, n: int, geo: dict, days_per_year: int) -> tuple[list[dict], float, int]:
-    """The ``n`` costliest stretches of ``df`` (per line and link), the time lost on all stretches in
-    loss and their number."""
+    """The ``n`` costliest stretches of ``df`` (per line and link) among those in loss, the time lost
+    on all of them and their number. None in loss (the metro between stations: no time lost
+    measured there) gives no stretch, not a list of zeros."""
     if not df.height:
         return [], 0.0, 0
     per_key = df.group_by("link_key").agg(pl.col("veh_s_day").sum(), pl.col("from_t").first(), pl.col("to_t").first())
@@ -280,7 +282,7 @@ def _stretches(df: pl.DataFrame, n: int, geo: dict, days_per_year: int) -> tuple
     loss = g.filter(pl.col("veh_s_day") > 0)
     tot, n_loss = float(loss["veh_s_day"].sum()), loss.height
     names = df.select("link_key", "from_t", "to_t", "len_m").unique("link_key", keep="first")
-    g = g.head(n).join(names, left_on="stretch", right_on="link_key", how="left").sort("veh_s_day", descending=True)
+    g = loss.head(n).join(names, left_on="stretch", right_on="link_key", how="left").sort("veh_s_day", descending=True)
     return [_stretch_row(i + 1, r, geo, days_per_year) for i, r in enumerate(g.iter_rows(named=True))], tot, n_loss
 
 
