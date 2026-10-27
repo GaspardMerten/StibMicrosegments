@@ -9,7 +9,7 @@
 FROM scratch AS microsegments-src
 
 FROM python:3.12-slim
-ARG MICROSEGMENTS="microsegments>=0.2.22,<0.3"
+ARG MICROSEGMENTS="microsegments>=0.2.23,<0.3"
 ARG MS_VERSION=0.0.0
 # _RJEM_MALLOC_CONF: polars' jemalloc gives freed memory back to the OS at once (else a peak stays in RSS)
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
