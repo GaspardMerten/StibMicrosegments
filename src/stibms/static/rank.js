@@ -3,6 +3,7 @@ import {$, DOW, busy, done, dowGet, esc, fdate, getJSON, nf, selChanged} from ".
 import {XR} from "./excl.js?rev=__REV__";
 import {badge, lineOf} from "./lines.js?rev=__REV__";
 import {REASONS} from "./quality.js?rev=__REV__";
+import {ran, watch} from "./stale.js?rev=__REV__";
 
 const L = window.L;     // Leaflet: a classic script in the page's head
 const RMODES = [["all", "Tous"], ["tram", "Tram"], ["bus", "Bus"], ["metro", "Métro"]];
@@ -27,6 +28,7 @@ export async function runRank() {
   const p = rankParams();
   history.replaceState(null, "", "/classement?" + p);
   const me = ++RK;
+  ran("rf", p);
   selChanged(true);
   $("rgo").disabled = true;
   busy($("rstatus"), "Classement en cours", "");
@@ -44,6 +46,7 @@ export async function runRank() {
 $("rf").addEventListener("submit", e => { e.preventDefault(); runRank(); });
 $("rterm").addEventListener("change", runRank);
 $("rtop").addEventListener("change", runRank);
+watch("rf", rankParams, "rout");
 
 // ranking intro, for a first visit: what a stretch is, what the value means, the period
 function rlede(termIn) {

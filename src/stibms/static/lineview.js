@@ -5,6 +5,7 @@ import {$, REV, S, busy, detailText, done, dowGet, esc, getJSON, selChanged} fro
 import {XL} from "./excl.js?rev=__REV__";
 import {dowsSel, setQuality, setSummary} from "./quality.js?rev=__REV__";
 import {excludeRoutes, showRoutes} from "./routes.js?rev=__REV__";
+import {ran, watch} from "./stale.js?rev=__REV__";
 
 let FRAME = null;     // the direction asked for is S.dir (also set from the URL by main.js)
 function drawSens(dirs, cur) {
@@ -51,6 +52,7 @@ export async function runLine() {
   const pu = new URLSearchParams(p); if (S.dir != null) pu.set("dir", S.dir);
   history.replaceState(null, "", location.pathname + "?" + pu);
   const me = ++RUN;
+  ran("f", p);
   selChanged(true);
   $("go").disabled = true; $("notes").innerHTML = ""; setQuality(null); showRoutes(null);
   busy($("status"), S.tab === "cmp" ? `Comparaison de la ligne ${esc(line)}` : `Calcul de la ligne ${esc(line)}`,
@@ -121,6 +123,7 @@ function showFrame(p, me) {
   });
 }
 $("f").addEventListener("submit", e => { e.preventDefault(); runLine(); });
+watch("f", lineParams, "view");
 $("routes").addEventListener("click", e => { if (excludeRoutes(e.target)) runLine(); });
 $("notes").addEventListener("click", e => {
   if (!e.target.closest("[data-xopen]")) return;

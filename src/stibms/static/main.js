@@ -13,7 +13,7 @@ function setTab(t) {
   $("lineview").hidden = t === "rank"; $("rankview").hidden = t !== "rank";
   $("single").hidden = t !== "one"; $("double").hidden = t !== "cmp";
   $("go").textContent = t === "cmp" ? "Comparer" : "Afficher";
-  document.title = {one: "Une ligne", cmp: "Comparer deux périodes", rank: "Classement du réseau"}[t] + " · STIB microsegments";
+  document.title = {one: "Ligne", cmp: "Comparaison", rank: "Global"}[t] + " · STIB microsegments";
   presets();
   selTab();
 }
