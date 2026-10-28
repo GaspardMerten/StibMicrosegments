@@ -423,6 +423,12 @@ def test_versions_grouped_by_stops():
     assert sh["removed"] == ["A"] and sh["pattern_uid"] == "s1" and sh["n_days"] == 7
     assert sh["periods"] == [{"first": "2026-06-06", "last": "2026-06-12", "n_days": 6},
                              {"first": "2026-06-21", "last": "2026-06-21", "n_days": 1}]
+    # a works route with more stops for a few days (71 extended to Herrmann-Debroux) is the change, not the route
+    ext = full + ["E", "F"]
+    g = _group_versions([run("2026-01-01", "2026-05-07", 127, full, "f1"), run("2026-05-08", "2026-05-17", 10, ext, "x1"),
+                         run("2026-05-18", "2026-06-30", 44, full, "f1")])
+    ref, x = (next(v for v in g if v["ref"] is r) for r in (True, False))
+    assert ref["stops"] == full and ref["n_days"] == 171 and x["added"] == ["E", "F"] and not x["removed"]
 
 
 def test_lasting_change_before_period():

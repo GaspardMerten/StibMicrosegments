@@ -61,13 +61,19 @@ def _group_versions(runs: list[dict]) -> list[dict]:
     they are one route here. ``periods``: its runs, those next to each other merged (runs follow
     each other over the days with data, so a gap of days without data does not split a period),
     each with first, last, n_days; ``first`` / ``last`` / ``n_days`` over all of them. The reference
-    is the route of the run with the most stops, the latest on a tie: ``ref`` true on it, ``removed`` /
+    is the stop sequence run on the most days (then the most stops, then the latest), its track that of
+    its longest run (the latest on a tie): a works route of a few days with more stops (71, 2026-05-08
+    ..17, extended to Herrmann-Debroux) is a change, not the route. ``ref`` true on it, ``removed`` /
     ``added`` stop names elsewhere, and on a route with the reference's stops its ``detours`` (see
     :func:`_track_changes`; a shape edit has none, so it is the reference)."""
     out = []
     for dr in sorted({r["direction_id"] for r in runs}):
         rs = sorted((r for r in runs if r["direction_id"] == dr), key=lambda r: r["first"])
-        ref = max(rs, key=lambda r: (r["n_stops"], r["last"], r["first"]))
+        days: dict[tuple, int] = {}
+        for r in rs:
+            days[tuple(r["stops"])] = days.get(tuple(r["stops"]), 0) + r["n_days"]
+        top = max(rs, key=lambda r: (days[tuple(r["stops"])], r["n_stops"], r["last"]))["stops"]
+        ref = max((r for r in rs if r["stops"] == top), key=lambda r: (r["n_days"], r["last"]))
         groups = _direction_groups(dr, rs, ref)
         ref_key = (tuple(ref["stops"]), ())
         out += [_finish_group(g, key == ref_key, ref) for key, g in groups.items()]
