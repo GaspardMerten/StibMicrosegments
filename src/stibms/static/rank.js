@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------- network page: selection, indicators, map, ranking
-import {$, DOW, MODE_FR, S, busy, done, dowGet, esc, fdate, fmonth, getJSON, monthEnd, nf, selChanged} from "./util.js?rev=__REV__";
+import {$, DOW, MODE_FR, S, addDays, busy, done, dowGet, esc, fdate, fmonth, getJSON, monthEnd, nf, selChanged} from "./util.js?rev=__REV__";
 import {XR} from "./excl.js?rev=__REV__";
 import {badge, lineOf, modeKey, niceName} from "./lines.js?rev=__REV__";
 import {REASONS} from "./quality.js?rev=__REV__";
@@ -39,6 +39,25 @@ $("rpresets").addEventListener("click", e => {
   v.focusAsked = null;
   runRank();
 });
+// ---------------------------------------------------------------- compare with a reference period
+const cmpOn = () => $("rcmp").checked && !!$("rcfrom").value && !!$("rcto").value;
+function cmpState() { for (const id of ["rcfrom", "rcto"]) $(id).disabled = !$("rcmp").checked; }
+const shiftYear = (s, n) => { const [y, m, d] = s.split("-").map(Number); const x = new Date(Date.UTC(y + n, m - 1, Math.min(d, new Date(Date.UTC(y + n, m, 0)).getUTCDate()), 12)); return x.toISOString().slice(0, 10); };
+function cmpPreset(kind) {
+  const a = $("rfrom").value, b = $("rto").value;
+  if (!a || !b) return;
+  if (kind === "year") { $("rcfrom").value = shiftYear(a, -1); $("rcto").value = shiftYear(b, -1); }
+  else { const n = Math.round((new Date(b) - new Date(a)) / 864e5); $("rcto").value = addDays(a, -1); $("rcfrom").value = addDays(a, -1 - n); }
+}
+$("rcmp").addEventListener("change", () => {
+  if ($("rcmp").checked && !($("rcfrom").value && $("rcto").value)) cmpPreset("year");
+  cmpState(); runRank();
+});
+$("rcpresets").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  cmpPreset(b.dataset.c); $("rcmp").checked = true; cmpState(); runRank();
+});
+cmpState();
 const rmode = () => ($("rmode").querySelector("[aria-pressed=true]") || {}).dataset?.mode || null;
 function setMode(m) { $("rmode").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.mode === m))); }
 $("rmode").addEventListener("click", e => {
@@ -98,6 +117,8 @@ export function setNetState(u) {
   rangeHours("rh1");
   v.focusAsked = u.get("focus");
   v.metric = u.get("metric") === "vr" ? "vr" : "v";
+  $("rcmp").checked = !!(u.get("cfrom") && u.get("cto")); $("rcfrom").value = u.get("cfrom") || ""; $("rcto").value = u.get("cto") || "";
+  cmpState();
   $("rmetric").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.m === v.metric)));
   drawBadges();
 }
@@ -110,7 +131,15 @@ function rankParams() {
   p.set("hours", `${$("rh0").value}-${$("rh1").value}`);
   if (v.lines.size) p.set("lines", [...v.lines].join(",")); else p.set("mode", rmode() || "all");
   if ($("rterm").checked) p.set("terminus", "true");
+  if (cmpOn()) { p.set("cfrom", $("rcfrom").value); p.set("cto", $("rcto").value); }
   return XR.params(p);
+}
+// the API's parameters (the comparison is two calls), for the reference period when ref
+function apiParams(ref) {
+  const p = rankParams(), a = p.get("cfrom"), b = p.get("cto");
+  p.delete("cfrom"); p.delete("cto");
+  if (ref) { p.set("from", a); p.set("to", b); }
+  return p;
 }
 // the displayed window of a focus: a month within the period, or the period
 function focusWindow(f, q) {
@@ -137,9 +166,10 @@ export async function runRank() {
   $("rall").classList.add("loading");
   busy($("rstatus"), "Calcul des indicateurs", "");
   try {
-    const R = await getJSON("/api/network?" + p);
+    const cmp = cmpOn();
+    const [R, R2] = await Promise.all([getJSON("/api/network?" + apiParams(false)), cmp ? getJSON("/api/network?" + apiParams(true)) : null]);
     if (me !== NK) return;
-    v.R = R;
+    v.R = R; v.R2 = R2 && R2.months.length ? R2 : null;
     if (!$("rfrom").value) $("rfrom").value = R.query.first;
     if (!$("rto").value) $("rto").value = R.query.last;
     ran("rf", rankParams());
@@ -150,7 +180,8 @@ export async function runRank() {
       return;
     }
     pickFocus(R);
-    drawNet(R, v.focus, chooseFocus);
+    drawNet(R, v.focus, chooseFocus, v.R2);
+    if (cmp && !v.R2) $("rnet").insertAdjacentHTML("afterbegin", `<div class="notice">Aucune donnée calculée sur la période de référence (${esc(fdate($("rcfrom").value))} → ${esc(fdate($("rcto").value))}) : la comparaison n'est pas affichée.</div>`);
     selChanged();
     done($("rstatus"), "");
     await runFocus();
@@ -170,6 +201,7 @@ function pickFocus(R) {
     + (spanDays <= 400 ? `<option value="all">Toute la période</option>` : "");
   $("rfocus").value = v.focus;
   $("rmaphead").hidden = false;
+  $("rfocus").closest("label").hidden = !!v.R2;   // the comparison maps the two whole periods
 }
 function chooseFocus(f) {
   v.focus = v.focusAsked = f;
@@ -184,10 +216,12 @@ $("rmetric").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
   v.metric = b.dataset.m;
   $("rmetric").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
-  paintBase(); pushUrl();
+  if (v.R2 && v.MA) drawCompare(v.MA, v.MB); else paintBase();
+  pushUrl();
 });
 async function runFocus() {
-  const q = v.R.query, [a, b] = focusWindow(v.focus, q), base = rankParams();
+  if (v.R2) return runCompare();
+  const q = v.R.query, [a, b] = focusWindow(v.focus, q), base = apiParams(false);
   base.set("from", a); base.set("to", b);
   const rp = new URLSearchParams(base); rp.set("top", $("rtop").value);
   rp.delete("mode"); if (!v.lines.size) rp.set("mode", rmode() || "all");
@@ -200,6 +234,28 @@ async function runFocus() {
     if (me !== FK) return;
     v.RK = RK; v.MP = MP;
     drawRank(RK, MP);
+    done($("rstatus"), "");
+  } catch (e) {
+    if (me === FK) { done($("rstatus"), esc(e.message), true); $("rout").innerHTML = ""; }
+  }
+  if (me === FK) $("rout").classList.remove("loading");
+}
+// the comparison's map: both whole periods (a map covers at most 400 days)
+async function runCompare() {
+  const me = ++FK, q = v.R.query, r = v.R2.query, days = x => (new Date(x.last) - new Date(x.first)) / 864e5;
+  pushUrl();
+  if (days(q) > 400 || days(r) > 400) {
+    v.MA = v.MB = null;
+    $("rout").innerHTML = `<div class="notice">La carte compare deux périodes d'au plus 400 jours chacune. Raccourcissez la période ou la référence pour voir les tronçons qui ont changé.</div>`;
+    return;
+  }
+  $("rout").classList.add("loading");
+  busy($("rstatus"), "Carte des deux périodes", "");
+  try {
+    const [MA, MB] = await Promise.all([getJSON("/api/network/map?" + apiParams(false)), getJSON("/api/network/map?" + apiParams(true))]);
+    if (me !== FK) return;
+    v.MA = MA; v.MB = MB;
+    drawCompare(MA, MB);
     done($("rstatus"), "");
   } catch (e) {
     if (me === FK) { done($("rstatus"), esc(e.message), true); $("rout").innerHTML = ""; }
@@ -344,6 +400,73 @@ function drawRankMap(S_, MP) {
   const all = [...BASE.map(b => b.pl), ...RLAYERS.filter(Boolean)];
   if (all.length) RMAP.fitBounds(L.featureGroup(all).getBounds(), {padding: [8, 8]});
   else RMAP.setView([50.85, 4.35], 12);
+}
+// ---------------------------------------------------------------- comparison map and lists
+const DV = 4;   // km/h at the ends of the scale
+const DVC = {slow: [229, 72, 77], mid: [107, 116, 136], fast: [57, 135, 229]};
+function dvColor(x) {
+  if (x == null) return NULLC;
+  const u = Math.max(-1, Math.min(1, x / DV)), to = u < 0 ? DVC.slow : DVC.fast, w = Math.abs(u);
+  return `rgb(${DVC.mid.map((c, i) => Math.round(c + (to[i] - c) * w)).join(",")})`;
+}
+const MIN_PD = 5;    // passages a day in both periods for a stretch to be listed
+function cmpRows(MA, MB) {
+  const ref = new Map((MB.links || []).map(l => [l.k, l])), m = v.metric;
+  return (MA.links || []).map(l => {
+    const r = ref.get(l.k), a = l[m], b = r ? r[m] : null;
+    const ok = a != null && b != null && a > 0 && b > 0;
+    const ds = ok ? l.len / (a / 3.6) - l.len / (b / 3.6) : null;      // seconds per vehicle, + = slower now
+    return {l, r, a, b, dv: ok ? a - b : null, ds, dh: ok ? ds * l.pd / 3600 : null, listed: ok && l.pd >= MIN_PD && r.pd >= MIN_PD};
+  });
+}
+function cmpTable(xs, kind) {
+  if (!xs.length) return `<p class="lbl">Aucun tronçon.</p>`;
+  const lb = x => badge(lineOf(x) || {line: x});
+  return `<table class="tbl"><thead><tr><th>Tronçon et lignes</th><th style="text-align:right">km/h</th><th style="text-align:right" title="secondes par véhicule">s / véh.</th><th style="text-align:right" title="heures-véhicule par jour, au nombre de passages de la période">h-véh. / jour</th></tr></thead><tbody>${xs.map(x =>
+    `<tr data-k="${esc(x.l.k)}"><td><b>${esc(x.l.f)} → ${esc(x.l.t)}</b><small>${nf(x.l.len)} m · ${nf(x.l.pd, 0)} passages / jour</small><div class="lines">${x.l.l.slice(0, 8).map(lb).join("")}</div></td>
+      <td class="n">${nf(x.b, 1)} → ${nf(x.a, 1)}</td><td class="n">${x.ds > 0 ? "+" : "−"}${nf(Math.abs(x.ds), 0)}</td><td class="n">${x.dh > 0 ? "+" : "−"}${nf(Math.abs(x.dh), 1)}</td></tr>`).join("")}</tbody></table>`;
+}
+function drawCompare(MA, MB) {
+  const rows = cmpRows(MA, MB), n = PHONE.matches ? 10 : +$("rtop").value, metric = v.metric === "vr" ? "entre arrêts" : "avec arrêts";
+  const listed = rows.filter(x => x.listed);
+  const worse = listed.filter(x => x.dh > 0).sort((a, b) => b.dh - a.dh).slice(0, n), better = listed.filter(x => x.dh < 0).sort((a, b) => a.dh - b.dh).slice(0, n);
+  const tot = listed.reduce((s, x) => s + x.dh, 0), q = v.R.query, r = v.R2.query;
+  $("rout").innerHTML = `<div class="rkgrid">
+      <div class="mapcol"><div id="rkmap"></div><div class="maplg" id="rklg"></div></div>
+      <div class="rklist cmplists"><h2 class="fh">Ce qui a changé</h2>
+        <p class="rk-sum">Vitesse ${metric}, du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b> contre du <b>${fdate(r.first)}</b> au <b>${fdate(r.last)}</b>. Sur les ${nf(listed.length)} tronçons mesurés dans les deux périodes, les véhicules passent <b>${nf(Math.abs(tot), 0)} heures-véhicule ${tot >= 0 ? "de plus" : "de moins"} par jour</b>, au nombre de passages de la période.</p>
+        <h3>Les plus ralentis</h3>${cmpTable(worse, "worse")}
+        <h3>Les plus accélérés</h3>${cmpTable(better, "better")}</div>
+    </div>
+    <p class="method">Pour chaque tronçon, le temps d'un véhicule (longueur divisée par la vitesse) dans la période est comparé à celui de la référence, puis multiplié par les passages par jour de la période. Seuls les tronçons avec au moins ${MIN_PD} passages par jour dans les deux périodes sont listés ; terminus, arrêts de régulation, jours exclus et heures au flux incomplet ne comptent pas, comme ailleurs sur la page.</p>`;
+  if (RMAP) { RMAP.remove(); RMAP = null; }
+  RMAP = L.map("rkmap", {scrollWheelZoom: false, preferCanvas: true, zoomSnap: .25});
+  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+    {attribution: "Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors", maxZoom: 16}).addTo(RMAP);
+  const cv = L.canvas({tolerance: 6}), byK = new Map();
+  const tip = x => `<b>${esc(x.l.f)} → ${esc(x.l.t)}</b><span class="lines">${x.l.l.slice(0, 10).map(y => badge(lineOf(y) || {line: y})).join("")}</span>`
+    + (x.dv == null ? "<span>Pas de vitesse dans l'une des deux périodes</span>" : `<b class="tv">${nf(x.b, 1)} → ${nf(x.a, 1)} km/h</b> (${x.dv > 0 ? "+" : "−"}${nf(Math.abs(x.dv), 1)}) · ${x.ds > 0 ? "+" : "−"}${nf(Math.abs(x.ds), 0)} s par véhicule`)
+    + `<br>${nf(x.l.pd, 0)} passages par jour · ${nf(x.l.len)} m`;
+  BASE = [];
+  for (const x of rows) {
+    const pl = L.polyline(offsetPath(x.l.c), {renderer: cv, lineCap: "butt", color: dvColor(x.dv), weight: x.listed ? 3 : 2, opacity: x.dv == null ? .6 : .95})
+      .bindTooltip(() => tip(x), {sticky: true, className: "rktip"}).addTo(RMAP);
+    byK.set(x.l.k, pl); BASE.push({l: x.l, pl});
+  }
+  if (BASE.length) RMAP.fitBounds(L.featureGroup(BASE.map(b => b.pl)).getBounds(), {padding: [8, 8]}); else RMAP.setView([50.85, 4.35], 12);
+  const stops = [-DV, 0, DV].map(x => `${dvColor(x)} ${100 * (x + DV) / (2 * DV)}%`).join(",");
+  $("rklg").innerHTML = `<div class="lgh"><b>Écart de vitesse ${metric}</b> <span>km/h, période moins référence</span></div><div class="lgb" style="background:linear-gradient(90deg,${stops})"></div>
+    <div class="lgt">${[-4, -2, 0, 2, 4].map(k => `<i style="left:${100 * (k + DV) / (2 * DV)}%">${k > 0 ? "+" : ""}${k}</i>`).join("")}</div><div class="lgd"><span>plus lent</span><span>plus rapide</span></div>
+    <div class="lgk"><span><i class="lgg"></i> pas de vitesse dans l'une des périodes</span></div>`;
+  let sel = null;
+  $("rout").querySelectorAll(".cmplists tbody tr").forEach(tr => tr.addEventListener("click", e => {
+    if (e.target.closest("a")) return;
+    const pl = byK.get(tr.dataset.k); if (!pl) return;
+    $("rout").querySelectorAll(".cmplists tr.sel").forEach(x => x.classList.remove("sel")); tr.classList.add("sel");
+    if (sel) sel.pl.setStyle({color: sel.c, weight: 3});
+    sel = {pl, c: pl.options.color}; pl.setStyle({color: "#F3C300", weight: 6}); pl.bringToFront();
+    RMAP.fitBounds(pl.getBounds(), {maxZoom: 16, padding: [60, 60]}); pl.openTooltip();
+  }));
 }
 function bindRankRows() {
   document.querySelectorAll("#rout tbody tr").forEach(tr => tr.addEventListener("click", e => {

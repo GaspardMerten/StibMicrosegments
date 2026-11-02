@@ -49,7 +49,7 @@ from .stretches import merge_groups
 log = logging.getLogger("stibms.ranking")
 MODES = ("all", "tram", "bus", "metro")
 DAY_BAND = BANDS["day"]   # the hours the cube sums already: any other hours read the hourly tables
-RANK_VERSION = 6      # bump when the ranking changes meaning (new cache keys); 5: excluded.n counts stretches;
+RANK_VERSION = 7      # bump when the ranking changes meaning (new cache keys); 5: excluded.n counts stretches;
                       # 6: only stretches in loss are listed
 DEFAULT_PTR = f"results/v{ALGO_VERSION}/ranking-default.json"
 DEFAULT_MONTHS = 1    # the default window: the last complete month (weekdays)
@@ -119,14 +119,15 @@ def default_window(data: Data, n: int = DEFAULT_MONTHS) -> tuple[dt.date, dt.dat
 
 
 def line_modes(data: Data, ttl: float = 3600) -> dict[str, dict]:
-    """line -> {mode, color, text_color, name} from the latest GTFS feeds."""
+    """line -> {mode, color, text_color, name}, from the newest GTFS feed that has the line: a line that no longer
+    runs (replacement buses T7, T92, lines withdrawn since) keeps its mode, so its km stay in its mode's totals."""
     def f():
         from microsegments.report import ROUTE_TYPES
         idx = data.gtfs_index()
         if not idx.height:
             return {}
         out = {}
-        for sha in reversed(idx["sha"].unique(maintain_order=True).to_list()[-6:]):
+        for sha in reversed(idx["sha"].unique(maintain_order=True).to_list()):
             for r in data.routes(sha).iter_rows(named=True):
                 ln = str(r["route_short_name"])
                 if ln in out:
@@ -222,7 +223,7 @@ def _hourly_month(data: Data, month: str, rq: RankQuery, keep_date: pl.Expr, wan
     h = data.read_optional(cube_rel(month, "hourly"))
     if h is None or not h.height:
         return None
-    h = h.filter(pl.col("ok") & keep_date)
+    h = h.filter(pl.col("spd_ok") & keep_date)     # the hours where the position feed holds the line
     if want is not None:
         h = h.filter(pl.col("line").is_in(want))
     day = pl.col("hour").is_between(rq.hours[0], rq.hours[1] - 1)
@@ -261,9 +262,11 @@ def per_line_links(data: Data, rq: RankQuery, info: dict) -> tuple[pl.DataFrame,
         want = list(rq.lines)
     elif rq.mode != "all":
         want = [ln for ln, v in info.items() if (v or {}).get("mode") == rq.mode]
+    from .network import left_out_days
+    out = set(rq.exclusions(data)) | left_out_days(data, rq.first, rq.last, rq.reduced)   # as the network page
     keep_date = (pl.col("service_date").is_between(rq.first, rq.last)
                  & pl.col("service_date").dt.weekday().sub(1).is_in(sorted(set(rq.dow)))
-                 & ~pl.col("service_date").is_in(sorted(rq.exclusions(data))))
+                 & ~pl.col("service_date").is_in(sorted(out)))
     dd = pl.concat(days, how="diagonal_relaxed").filter(keep_date).unique()
     lines = dd["line"].cast(pl.Utf8).unique().to_list() if dd.height else []
     if want is not None:

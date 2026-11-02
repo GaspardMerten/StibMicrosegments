@@ -91,6 +91,11 @@
           <div class="dates"><select id="rh0" aria-label="De"></select><em>→</em><select id="rh1" aria-label="À"></select></div></div>
         <div class="fld"><span>Jours</span><div class="dow" id="rdow"></div></div>
         <div class="presets" id="rpresets"></div>
+        <div class="cmprow" id="rcmprow">
+          <label class="check"><input type="checkbox" id="rcmp"> Comparer avec</label>
+          <div class="dates"><input type="date" id="rcfrom" aria-label="Période de référence, du"><em>→</em><input type="date" id="rcto" aria-label="au"></div>
+          <div class="presets" id="rcpresets"><button type="button" data-c="year">Un an plus tôt</button><button type="button" data-c="prev">Période précédente</button></div>
+        </div>
         <button class="go" id="rgo" type="submit">Afficher</button>
         <details class="more" id="rmore">
           <summary>Options (jours exclus, terminus) · <span class="xsum" id="rxsum"></span></summary>

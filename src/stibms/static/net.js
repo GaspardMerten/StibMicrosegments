@@ -9,7 +9,7 @@ const NAME = {all: "Réseau", bus: "Bus", tram: "Tram", metro: "Métro", sel: "S
 // STIB's activity report 2025 (statistical part), figures for 2025 and 2024
 const STIB_URL = "https://stib-activityreports.brussels/img/STIB_statistic_report_en.pdf";
 const OFFICIAL = {speed: {tram: [16.6, 16.2], bus: [15.4, 15.8], metro: [27.9, 27.9]}, km: {all: [51.35, 52.81], metro: [5.87, 5.93], tram: [14.84, 15.35], bus: [29.23, 30.08], taxibus: [1.41, 1.44]}};
-const st = {R: null, scope: "all", focus: null, onFocus: null};
+const st = {R: null, R2: null, scope: "all", focus: null, onFocus: null};
 
 const millions = v => v == null ? "–" : v >= 1e6 ? `${nf(v / 1e6, 2)} million${v >= 2e6 ? "s" : ""}` : nf(Math.round(v / 100) * 100);
 const thousand = v => v == null ? "–" : nf(Math.round(v / 1000));
@@ -50,6 +50,42 @@ function tilesHtml(R) {
     <div class="kpi"><label>Km planifiés</label><b>${millions(km.plan)}</b><span>${perDay(km.plan)}</span></div>
     <div class="kpi"><label>Km réalisés</label><b>${millions(km.real)}</b><span><strong>${nf(km.pct, 1)} %</strong> du planifié${kp && kp.pct != null && km.pct != null ? ` · ${delta(km.pct, kp.pct, "pts")}` : ""}</span></div>
   </div>`;
+}
+// ---------------------------------------------------------------- comparison: the period against a reference period
+function cmpVals(R, k) {
+  const g = R.total[k];
+  if (!g) return null;
+  const km = kmOf(g, st.scope), d = st.scope === "all" ? R.days_all : R.days;
+  return {vr: g.vr, v: g.v, real: d ? km.real / d : null, plan: d ? km.plan / d : null, pct: km.pct};
+}
+const sign = (x, d, unit) => x == null ? "–" : Math.abs(x) < .5 * 10 ** -d ? "stable" : `${x > 0 ? "+" : "−"}${nf(Math.abs(x), d)}${unit ? " " + unit : ""}`;
+const diff = (a, b) => a == null || b == null ? null : a - b;
+function compareHtml(R, R2) {
+  const key = R.selection, a = cmpVals(R, key), b = cmpVals(R2, key), q = R.query, r = R2.query;
+  if (!a || !b) return "";
+  const noSp = key === "metro";
+  const tile = (lab, x, y, d, unit, big, small) => `<div class="kpi"><label>${lab}</label><b>${big(x)}</b>
+    <span class="ref">référence ${small(y)} · <strong>${sign(diff(x, y), d, unit)}</strong></span></div>`;
+  const kmhT = x => x == null ? "–" : `${nf(x, 1)} km/h`;
+  const kmh = x => x == null ? "–" : `${nf(x, 1)}<u> km/h</u>`, kmd = x => x == null ? "–" : nf(Math.round(x / 100) * 100), pc = x => x == null ? "–" : `${nf(x, 1)} %`;
+  const keys = groupsShown(R), cols = [["vr", "Entre arrêts", 1, "km/h"], ["v", "Avec arrêts", 1, "km/h"], ["real", "Km réalisés / jour", 0, ""], ["pct", "% du planifié", 1, "pts"]];
+  const head1 = cols.map(([, t]) => `<th colspan="3" class="gh sub3">${t}</th>`).join("");
+  const head2 = cols.map(() => `<th class="sub3">Période</th><th>Réf.</th><th>Écart</th>`).join("");
+  const fmt = (k, x) => x == null ? "–" : k === "real" ? nf(Math.round(x / 10) * 10) : nf(x, 1);
+  const rows = keys.map(k => {
+    const x = cmpVals(R, k), y = cmpVals(R2, k);
+    if (!x || !y) return "";
+    return `<tr><th scope="row"><i class="dot" style="background:${COL[k]}"></i>${esc(NAME[k])}</th>${cols.map(([c, , d]) => {
+      const ns = k === "metro" && (c === "v" || c === "vr");
+      return ns ? `<td class="sub3">–</td><td>–</td><td>–</td>` : `<td class="sub3">${fmt(c, x[c])}</td><td>${fmt(c, y[c])}</td><td class="dlt">${sign(diff(x[c], y[c]), c === "real" ? 0 : d)}</td>`;
+    }).join("")}</tr>`;
+  }).join("");
+  return `<section class="cmp"><div class="fhr"><h2 class="fh">Comparaison · ${esc(NAME[key])}</h2></div>
+    <p class="cmpwhen">Période <b>${fday(q.first, true)} → ${fday(q.last, true)}</b> (${nf(st.scope === "all" ? R.days_all : R.days)} j) contre la référence <b>${fday(r.first, true)} → ${fday(r.last, true)}</b> (${nf(st.scope === "all" ? R2.days_all : R2.days)} j) : mêmes jours, heures, lignes et jours exclus. Km par jour, ${esc(allTxt(R) === "tous les jours et toutes les heures" || st.scope === "all" ? allTxt(R) : daysTxt(q) + ", " + hoursTxt(q))}.</p>
+    <div class="kpis">${noSp ? `<div class="kpi"><label>Vitesse</label><b>n/d</b><span>Pas de vitesse pour le métro.</span></div><div class="kpi"><label>&nbsp;</label><b>&nbsp;</b></div>`
+      : tile("Vitesse entre arrêts", a.vr, b.vr, 1, "km/h", kmh, kmhT) + tile("Vitesse avec arrêts", a.v, b.v, 1, "km/h", kmh, kmhT)}
+      ${tile("Km réalisés par jour", a.real, b.real, 0, "km", kmd, kmd)}${tile("Part du planifié roulée", a.pct, b.pct, 1, "pts", pc, pc)}</div>
+    <div class="tscroll" style="margin-top:12px"><table class="mt"><thead><tr><th rowspan="2" class="mh">Groupe</th>${head1}</tr><tr>${head2}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 function speedSeries(R, field) {
   const key = R.selection, keys = key === "all" ? ["all", "bus", "tram"] : key === "metro" ? [] : [key, "all"];
@@ -145,13 +181,13 @@ function methodHtml(R) {
 function draw() {
   const R = st.R;
   if (!R) return;
-  $("rnet").innerHTML = tilesHtml(R) + chartsHtml(R) + leftOutHtml(R) + tableHtml(R) + methodHtml(R);
+  $("rnet").innerHTML = (st.R2 ? compareHtml(R, st.R2) : "") + tilesHtml(R) + chartsHtml(R) + leftOutHtml(R) + tableHtml(R) + methodHtml(R);
   drawCharts(R);
   $("rstrike")?.addEventListener("click", () => { XR.set("reduced", !XR.on("reduced")); $("rgo").click(); });
   $("rkmscope").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { st.scope = b.dataset.s; draw(); } });
   $("rcsv").addEventListener("click", () => csv(R));
   $("rnet").querySelectorAll("tbody tr[data-m]").forEach(tr => tr.addEventListener("click", () => st.onFocus && st.onFocus(tr.dataset.m)));
 }
-export function drawNet(R, focus, onFocus) { st.R = R; st.focus = focus; st.onFocus = onFocus; draw(); }
+export function drawNet(R, focus, onFocus, R2 = null) { st.R = R; st.R2 = R2; st.focus = focus; st.onFocus = onFocus; draw(); }
 export function setFocus(f) { st.focus = f; draw(); }
 new ResizeObserver(() => { if (st.R && $("ck")) { clearTimeout(st.t); st.t = setTimeout(() => drawCharts(st.R), 120); } }).observe($("rnet"));

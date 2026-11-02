@@ -779,6 +779,25 @@ def test_trip_hours_shares_km_by_time():
     assert shape_km(s)["km"][0] == pytest.approx(1.112, abs=0.01)
 
 
+def test_passages_after_midnight_on_their_service_day():
+    from stibms.linkcube import service_hours
+    d1, d2 = dt.date(2025, 3, 3), dt.date(2025, 3, 4)
+    p = pl.DataFrame({"service_date": [d1, d2, d2], "hour": [24, 0, 8], "pattern_uid": ["p"] * 3, "link_key": ["a"] * 3,
+                      "n_feed": [3.0, 0.0, 5.0], "n_events": [0.0, 4.0, 5.0], "n": [3.0, 4.0, 5.0]}).with_columns(pl.col("hour").cast(pl.Int8))
+    r = {(x["service_date"], x["hour"]): x["n"] for x in service_hours(p).iter_rows(named=True)}
+    assert r == {(d1, 24): 4.0, (d2, 8): 5.0}       # the 00:xx events join hour 24 of the day before: max(3, 4)
+
+
+def test_feed_flag_survives_a_partial_rebuild():
+    from stibms.linkcube import _with_feed
+    d = dt.date(2025, 3, 3)
+    old = pl.DataFrame({"service_date": [d], "hour": [8], "line": ["1"], "km": [1.0], "feed_ok": [True]}).with_columns(pl.col("hour").cast(pl.Int8))
+    new = pl.DataFrame({"service_date": [d], "hour": [8], "line": ["55"], "km": [2.0]}).with_columns(pl.col("hour").cast(pl.Int8))
+    cov = pl.DataFrame({"service_date": [d], "hour": [8], "coverage": [1.0], "flags": [0]})
+    out = _with_feed(pl.concat([old, new], how="diagonal_relaxed"), cov)
+    assert out.columns.count("feed_ok") == 1 and "feed_ok_right" not in out.columns and out["feed_ok"].all()
+
+
 def test_strike_and_no_feed_days():
     from stibms import network as N
     d1, d2, d3, d4 = (dt.date(2025, 3, x) for x in (3, 4, 5, 6))

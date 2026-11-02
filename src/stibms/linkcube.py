@@ -77,6 +77,7 @@ BANDS = {"day": (6, 21), "eve": (20, 24), "am": (7, 10), "pm": (16, 19)}
 LONG_BANDS = ("day", "eve")
 DAY_HOURS = (6, 21)
 REG_SHARE = 0.5        # share of the excess in long stands that makes a link a regulation point
+FIRST_HOUR = 4         # a service day runs from 04:00 to 03:59 the next morning (hours 4-27)
 MIN_FEED_SHARE = 0.6   # normal hours are above 0.9 (n is at most a few % above n_feed)
 TABLES = ("cube", "days", "links", "marks", "hourly", "linehours")   # per line; plan.parquet is the timetable
 
@@ -184,6 +185,24 @@ def _line_hours(h: pl.DataFrame, roles: pl.DataFrame, mk: pl.DataFrame) -> pl.Da
         (pl.col("o_r") * TICK_S).filter(between).sum().cast(pl.Float32).alias("t_r"))
 
 
+def service_hours(passages: pl.DataFrame | None) -> pl.DataFrame | None:
+    """Passages on the service day: the stop events are filed by calendar day (the punctuality files are per
+    calendar day), so a metro passing at 00:30 sits at hour 0 of the next date instead of hour 24 of its service
+    day, where the position feed and the timetable put it. Hours under ``FIRST_HOUR`` move back one day (+24) and
+    rows that meet are merged, ``n`` = max of the two sources again. Rows that leave the month are dropped."""
+    if passages is None or not passages.height:
+        return passages
+    late = pl.col("hour") < FIRST_HOUR
+    p = passages.with_columns(pl.when(late).then(pl.col("service_date") - pl.duration(days=1)).otherwise(pl.col("service_date")).alias("service_date"),
+                              pl.when(late).then(pl.col("hour").cast(pl.Int16) + 24).otherwise(pl.col("hour")).cast(pl.Int8).alias("hour"))
+    key = [c for c in ("service_date", "hour", "pattern_uid", "link_key") if c in p.columns]
+    src = [c for c in ("n_feed", "n_events") if c in p.columns]
+    if len(src) < 2:
+        return p
+    return (p.group_by(key).agg(*[pl.col(c).sum() for c in src])
+            .with_columns(pl.max_horizontal(*src).alias("n")))
+
+
 def _with_passages(o: pl.DataFrame, passages: pl.DataFrame | None, ok: pl.DataFrame) -> pl.DataFrame:
     if passages is None or not passages.height:
         return o.with_columns([pl.lit(0.0, pl.Float32).alias(f"p_{b}") for b in BANDS])
@@ -195,12 +214,19 @@ def _with_passages(o: pl.DataFrame, passages: pl.DataFrame | None, ok: pl.DataFr
 
 
 def _link_roles(net) -> pl.DataFrame:
-    """(link_key, from_name, to_name, len_m, term): names, length, terminus role (first/last link of a
-    pattern; a stop that ends a pattern)."""
+    """(link_key, from_name, to_name, len_m, term): names, length, terminus role: 1 for the first or last
+    link of a main route (``pattern_days.is_main``: the layover of every vehicle), 2 for a link touching a stop
+    that ends any route (a short working's terminus: through vehicles run it normally, so it counts unless the
+    regulation test says vehicles wait there), else 0. Taking the ends of every route instead dropped the running
+    time of the through vehicles there and read speeds 0.3-0.8 km/h too high (audit 2026-11-02)."""
     lk = net.links
     pats = net.patterns.select("pattern_uid", "stop_ids")
     ends = list(set(pats["stop_ids"].list.first().to_list()) | set(pats["stop_ids"].list.last().to_list()))
-    first_last = (lk.with_columns(pl.col("link_idx").max().over("pattern_uid").alias("_m"))
+    pd_ = getattr(net, "pattern_days", None)
+    mains = (pd_.filter(pl.col("is_main"))["pattern_uid"].unique() if pd_ is not None and pd_.height and "is_main" in pd_.columns
+             else lk["pattern_uid"].unique())
+    first_last = (lk.filter(pl.col("pattern_uid").is_in(mains.implode()))
+                  .with_columns(pl.col("link_idx").max().over("pattern_uid").alias("_m"))
                   .filter((pl.col("link_idx") == 0) | (pl.col("link_idx") == pl.col("_m")))["link_key"].unique())
     return (lk.group_by("link_key").agg(pl.col("from_stop").first(), pl.col("to_stop").first(),
                                         pl.col("from_name").first(), pl.col("to_name").first(),
@@ -239,13 +265,17 @@ def line_cube(line: str, placed: pl.DataFrame, passages: pl.DataFrame | None, ne
     mk = stopzones.marks(p, line)
     if not p.height or not net.links.height or not days:
         return {"days": days_df, "marks": mk}
+    passages = service_hours(passages)
     fx = _fixes(p, net, mk, ok, cov)
-    o = _with_passages(fx.group_by("service_date", "link_key").agg(_band_aggs()), passages, ok)
+    h = _hourly(fx, passages, ok)
+    # the cube (ranking, regulation test) keeps the hours where the position feed holds the line, as the speeds
+    seen = h.filter(pl.col("ok") & ~pl.col("spd_ok")).select("service_date", "hour").unique()
+    ok_s = ok.join(seen, on=["service_date", "hour"], how="anti")
+    o = _with_passages(fx.join(ok_s, on=["service_date", "hour"], how="semi").group_by("service_date", "link_key").agg(_band_aggs()), passages, ok_s)
     num = [c for c in o.columns if c[:2] in ("o_", "l_", "p_")]
     o = o.with_columns([pl.col(c).fill_null(0) for c in num]).with_columns(lit)
     roles = (_link_roles(net).join(_regulation(o, skip), on="link_key", how="left")
              .with_columns(pl.col("reg").fill_null(False), pl.col("reg_r").fill_null(False)))
-    h = _hourly(fx, passages, ok)
     return {"cube": o, "days": days_df, "links": roles.with_columns(lit), "marks": mk,
             "hourly": h.with_columns(lit), "linehours": _line_hours(h, roles, mk).with_columns(lit)}
 
@@ -254,6 +284,7 @@ def _with_feed(df: pl.DataFrame, cov: pl.DataFrame) -> pl.DataFrame:
     """``df`` (service_date, hour, ...) + ``feed_ok``: the feed itself was up that hour (a line missing
     from a working feed really did not run: its km count as lost, not as unknown)."""
     from microsegments.config import Quality
+    df = df.drop("feed_ok", strict=False)
     if not df.height:
         return df.with_columns(pl.lit(False).alias("feed_ok"))
     f = cov.select("service_date", pl.col("hour").cast(pl.Int8),

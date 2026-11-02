@@ -51,7 +51,7 @@ from .linkcube import rel as cube_rel
 from .queries import check_days, check_dow, check_holidays, check_span, days_canonical, digest
 from .stopzones import APPROACH_M, default_head, heads
 
-NET_VERSION = 3
+NET_VERSION = 4
 NOFEED_SHARE = 0.5          # under this share of the planned km in hours with feed: a day without data
 STRIKE_RATIO = 0.75         # under this share of the planned km run, feed up: a strike day
 MODES = ("all", "bus", "tram", "metro")
@@ -176,6 +176,8 @@ def _per_line_month(lh: pl.DataFrame, plan: pl.DataFrame, chosen: pl.Expr) -> pl
     r = lh.filter(chosen).group_by("line").agg(
         pl.col("km").sum().cast(pl.Float64).alias("real"), pl.col("km").filter("feed_ok").sum().cast(pl.Float64).alias("real_ok"),
         *[pl.col(c).sum().cast(pl.Float64) for c in ("d_s", "t_s", "d_r", "t_r")])
+    if lh.height:     # a line with no cube that month (failed, never derived) is not 100 % lost
+        plan = plan.filter(pl.col("line").is_in(lh["line"].unique().implode()))
     p = plan.filter(chosen).group_by("line").agg(
         pl.col("km").sum().cast(pl.Float64).alias("plan"), pl.col("km").filter("feed_ok").sum().cast(pl.Float64).alias("plan_ok"))
     return r.join(p, on="line", how="full", coalesce=True).fill_null(0.0)
@@ -247,6 +249,19 @@ def _left_out(q: NetQuery, an: dict) -> tuple[set, set]:
     nofeed = {d for d, (w, _) in an.items() if w == "nofeed"}
     strikes = {d for d, (w, _) in an.items() if w == "strike"} if q.reduced == "exclude" else set()
     return nofeed | strikes, nofeed | strikes
+
+
+def left_out_days(data: Data, first: dt.date, last: dt.date, reduced: str = "exclude") -> set:
+    """The days of [first, last] the network page leaves out with these options (no feed; strikes with
+    ``reduced=exclude``), for the ranking to leave out the same."""
+    q = NetQuery(first=first, last=last, reduced=reduced)
+    red, out = _reduced_days(data, q), set()
+    for m in months_between(first, last):
+        if m in data.derived_months():
+            lh, plan = _month_tables(data, q, m)
+            if lh is not None:
+                out |= _left_out(q, _anomalies(lh, plan, red))[0]
+    return out
 
 
 def _reduced_days(data: Data, q: NetQuery) -> set:
@@ -370,10 +385,12 @@ def compute_map(data: Data, q: MapQuery) -> dict:
     if not roles:
         return empty
     links = (pl.concat(roles, how="diagonal_relaxed").sort("term", descending=True).unique(["line", "link_key"], keep="first"))
-    head = heads(pl.concat(marks, how="diagonal_relaxed")) if marks else pl.DataFrame(schema={"link_key": pl.Utf8, "head_m": pl.Float64})
+    mk = pl.concat(marks, how="diagonal_relaxed") if marks else None
+    head = (mk.group_by("line", "link_key").agg((pl.col("mark_m").max().ceil() + 1.0).alias("head_m")) if mk is not None and mk.height
+            else pl.DataFrame(schema={"line": pl.Utf8, "link_key": pl.Utf8, "head_m": pl.Float64}))   # stopzones.heads, per line
     x = (pl.concat(got).group_by("line", "link_key").agg(*[pl.col(c).sum() for c in ("n", "n_v", "n_r", "o_v", "o_r", "days")])
          .join(links.select("line", "link_key", "from_name", "to_name", "len_m", "term"), on=["line", "link_key"], how="inner")
-         .join(head, on="link_key", how="left"))
+         .join(head, on=["line", "link_key"], how="left"))
     run = (pl.col("len_m") - pl.col("head_m").fill_null(default_head()) - APPROACH_M).clip(0)
     no_speed = [ln for ln, m in modes.items() if m in NO_SPEED]
     x = x.with_columns(pl.col("line").is_in(no_speed).alias("nosp"), (pl.col("n_v") * pl.col("len_m")).alias("_d"), (pl.col("n_r") * run).alias("_dr"))
