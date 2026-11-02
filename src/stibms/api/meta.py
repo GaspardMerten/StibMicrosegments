@@ -41,7 +41,8 @@ def _months_info(data) -> dict:
     ing_months = sorted({month_key(d) for d in ing})
     complete = [m for m in have if ing and _month_last(m) <= ing[-1]]
     return {"ingested": {**_span(ing), "days": len(ing)},
-            "derived_months": list(have), "pending_months": [m for m in ing_months if m not in have],
+            # months being prepared: collected after the last derived one (a gap in the history is not "in progress")
+            "derived_months": list(have), "pending_months": [m for m in ing_months if m not in have and (not have or m > max(have))],
             "complete_months": complete}
 
 

@@ -788,6 +788,15 @@ def test_passages_after_midnight_on_their_service_day():
     assert r == {(d1, 24): 4.0, (d2, 8): 5.0}       # the 00:xx events join hour 24 of the day before: max(3, 4)
 
 
+def test_line_page_leaves_out_partial_feed_hours():
+    from stibms.coverage import VEHICLE_RATIO, with_partial_feed
+    d = dt.date(2025, 2, 10)
+    cov = pl.DataFrame({"service_date": [d, d], "hour": [8, 9], "coverage": [1.0, 1.0], "flags": [0, 0]}).with_columns(pl.col("hour").cast(pl.Int8))
+    pas = pl.DataFrame({"service_date": [d, d], "hour": [8, 9], "link_key": ["a", "a"], "n_feed": [2.0, 10.0], "n_events": [10.0, 10.0], "n": [10.0, 10.0]})
+    out = {r["hour"]: r["flags"] for r in with_partial_feed(cov, pas).iter_rows(named=True)}
+    assert out == {8: VEHICLE_RATIO, 9: 0}
+
+
 def test_feed_flag_survives_a_partial_rebuild():
     from stibms.linkcube import _with_feed
     d = dt.date(2025, 3, 3)

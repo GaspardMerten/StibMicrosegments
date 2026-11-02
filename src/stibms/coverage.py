@@ -13,6 +13,7 @@ from . import schedule
 from .data import Data, date_range, month_key
 
 LINE_ABSENT = 4          # microsegments.schema.Flag.LINE_ABSENT
+VEHICLE_RATIO = 256      # microsegments.schema.Flag.VEHICLE_RATIO: excluded by the analysis, "nombre de véhicules anormal"
 FEED_BAD = 3             # coverage flags of the feed itself (no poll, frozen)
 TYPICAL_MIN_OBS = 20     # an hour "normally has" the line when its median count is at least this
 DQ_HOURS = (6, 20)       # hours a day is judged on (inclusive), as the package's Quality
@@ -53,6 +54,24 @@ def with_absence(cov: pl.DataFrame, counts: pl.DataFrame, dates) -> pl.DataFrame
             .with_columns(pl.when(pl.col("_ab")).then(pl.col("flags") | LINE_ABSENT).otherwise(pl.col("flags"))
                           .cast(cov.schema["flags"]).alias("flags"))
             .drop("_ab"))
+
+
+def with_partial_feed(cov: pl.DataFrame, passages: pl.DataFrame | None) -> pl.DataFrame:
+    """``cov`` with VEHICLE_RATIO on the hours where the position feed saw under ``linkcube.MIN_FEED_SHARE`` of
+    the line's passages (the stop events count them all): its observations then hold a fraction of the vehicles
+    against all the passages, and times per passage read far too short (tram 7, February 2025). The same hours
+    are left out of the network page's speeds and of the ranking."""
+    from .linkcube import MIN_FEED_SHARE
+    if not cov.height or passages is None or not passages.height or "n_feed" not in passages.columns:
+        return cov
+    g = (passages.group_by("service_date", pl.col("hour").cast(pl.Int8))
+         .agg(pl.col("n_feed").sum().alias("_f"), pl.col("n").sum().alias("_n")))
+    bad = g.filter(pl.col("_f") < MIN_FEED_SHARE * pl.col("_n")).select("service_date", "hour").with_columns(pl.lit(True).alias("_pf"))
+    hour_t = cov.schema["hour"]
+    return (cov.join(bad.with_columns(pl.col("hour").cast(hour_t)), on=["service_date", "hour"], how="left")
+            .with_columns(pl.when(pl.col("_pf")).then(pl.col("flags") | VEHICLE_RATIO).otherwise(pl.col("flags"))
+                          .cast(cov.schema["flags"]).alias("flags"))
+            .drop("_pf"))
 
 
 def _per_day(cov: pl.DataFrame, min_hour: float) -> dict[dt.date, tuple[float, int, int, int]]:

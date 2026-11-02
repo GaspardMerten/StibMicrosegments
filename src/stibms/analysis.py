@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 import polars as pl
 
 from . import ms, schedule, stopzones
-from .coverage import hour_counts, with_absence
+from .coverage import hour_counts, with_absence, with_partial_feed
 from .data import ALGO_VERSION, Data, date_range, months_of
 from .queries import CompareQuery, Query  # noqa: F401 - the analysis' queries, re-exported
 
@@ -131,6 +131,8 @@ def load(data: Data, line: str, dates: list[dt.date], label: str = "cette pério
     passages = data.passages(line, dates)
     ing = set(data.ingested_dates())     # gaps in the collection are no hours without the line
     cov = with_absence(data.coverage(dates), counts, [d for d in dates if d in ing])
+    if route_mode(data, line, dates) != "metro":   # the feed places metro trains at stations only: always "partial"
+        cov = with_partial_feed(cov, passages)
     net = data.network(line, dates)
     mk = exit_marks(data, line, dates, blobs)
     return Loaded(dates, blobs, uids, seen, passages, cov, net, mk, {"load": round(time.time() - t, 3)},
