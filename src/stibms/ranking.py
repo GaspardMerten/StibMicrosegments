@@ -41,19 +41,19 @@ import polars as pl
 
 from . import ms, schedule
 from .data import ALGO_VERSION, Data, by_line, date_range, month_dates, months_between
-from .linkcube import TICK_S
+from .linkcube import BANDS, LONG_BANDS, REG_SHARE, TICK_S
 from .linkcube import rel as cube_rel
 from .queries import check_days, check_dow, check_holidays, check_span, days_canonical, digest
 from .stretches import merge_groups
 
 log = logging.getLogger("stibms.ranking")
 MODES = ("all", "tram", "bus", "metro")
+DAY_BAND = BANDS["day"]   # the hours the cube sums already: any other hours read the hourly tables
 RANK_VERSION = 6      # bump when the ranking changes meaning (new cache keys); 5: excluded.n counts stretches;
                       # 6: only stretches in loss are listed
 DEFAULT_PTR = f"results/v{ALGO_VERSION}/ranking-default.json"
 DEFAULT_MONTHS = 1    # the default window: the last complete month (weekdays)
 MIN_DAYS = 5          # links seen on fewer usable days are left out (a short detour otherwise tops the list)
-REG_SHARE = 0.5       # share of the excess in long stands that makes a link a regulation point
 REASONS = {"terminus": "terminus de la ligne", "short_terminus": "terminus partiel (des véhicules y stationnent plus de 3 min)",
            "holding": "arrêt où des véhicules attendent plus de 3 min pour respecter l'horaire"}
 
@@ -70,9 +70,13 @@ class RankQuery:
     school: str = "include"              # days left out on purpose, as the line page (stibms.schedule)
     reduced: str = "exclude"             # strikes left out by default
     exclude: tuple = ()
+    hours: tuple[int, int] = (6, 21)     # the hours compared with the evening; others read the hourly tables
+    lines: tuple[str, ...] = ()          # only these lines (the mode is then ignored)
 
     def __post_init__(self):
         check_span(self.first, self.last)
+        if not (0 <= self.hours[0] < self.hours[1] <= 28):
+            raise ValueError("hours must be a-b with a < b, within 0..28 (24 and more: after midnight)")
         if self.mode not in MODES:
             raise ValueError(f"mode must be one of {', '.join(MODES)}")
         check_dow(self.dow)
@@ -86,6 +90,13 @@ class RankQuery:
     def canonical(self) -> dict:
         d = days_canonical(self, self.first, self.last)
         d["first"], d["last"] = self.first.isoformat(), self.last.isoformat()
+        # spelt out only when they differ from the defaults: the keys of the usual rankings do not move
+        if self.hours == DAY_BAND:
+            del d["hours"]
+        if self.lines:
+            d["lines"] = sorted(self.lines, key=by_line)
+        else:
+            del d["lines"]
         return d
 
     def key(self, stamp: str, top: int = 50) -> str:
@@ -205,6 +216,39 @@ def _reasons(s: pl.DataFrame, links: list[pl.DataFrame]) -> pl.DataFrame:
         .otherwise(pl.lit("day")).alias("peak"))
 
 
+def _hourly_month(data: Data, month: str, rq: RankQuery, keep_date: pl.Expr, want: list[str] | None) -> pl.DataFrame | None:
+    """One month of the hourly tables, summed per (line, link) into the cube's columns: the "day" band holds
+    the hours asked for; the evening reference and the peaks stay what they are."""
+    h = data.read_optional(cube_rel(month, "hourly"))
+    if h is None or not h.height:
+        return None
+    h = h.filter(pl.col("ok") & keep_date)
+    if want is not None:
+        h = h.filter(pl.col("line").is_in(want))
+    day = pl.col("hour").is_between(rq.hours[0], rq.hours[1] - 1)
+    bands = {"day": day, **{b: pl.col("hour").is_between(a, z - 1) for b, (a, z) in BANDS.items() if b != "day"}}
+    aggs = []
+    for b, inb in bands.items():
+        aggs += [pl.col("o_r").filter(inb).sum().cast(pl.Float64).alias(f"o_{b}_r"), pl.col("o_s").filter(inb).sum().cast(pl.Float64).alias(f"o_{b}_s"),
+                 pl.col("n").filter(inb).sum().cast(pl.Float64).alias(f"p_{b}")]
+        if b in LONG_BANDS:
+            aggs += [pl.col("l_r").filter(inb).sum().cast(pl.Float64).alias(f"l_{b}_r"), pl.col("l_s").filter(inb).sum().cast(pl.Float64).alias(f"l_{b}_s")]
+    daily = h.group_by("line", "link_key", "service_date").agg(aggs)
+    num = [c for c in daily.columns if c[:2] in ("o_", "l_", "p_")]
+    return daily.group_by("line", "link_key").agg([pl.col(c).sum() for c in num] + [(pl.col("p_day") > 0).sum().alias("n_days")])
+
+
+def _hourly_links(data: Data, rq: RankQuery, keep_date: pl.Expr, want: list[str] | None) -> pl.DataFrame:
+    """Per (line, link) over the window, one month at a time: months of hourly rows never sit in memory."""
+    months = months_between(rq.first, rq.last)
+    with ThreadPoolExecutor(max_workers=min(4, len(months))) as ex:
+        got = [x for x in ex.map(lambda m: _hourly_month(data, m, rq, keep_date, want), months) if x is not None and x.height]
+    if not got:
+        return pl.DataFrame()
+    all_ = pl.concat(got, how="diagonal_relaxed")
+    return all_.group_by("line", "link_key").agg(pl.exclude("line", "link_key").sum())
+
+
 def per_line_links(data: Data, rq: RankQuery, info: dict) -> tuple[pl.DataFrame, list[str], int]:
     """Per (line, link_key): vehicle time lost per day (selected zones, running and stop parts),
     passages per day, reason. Returns (frame, lines with data, lines used after the mode filter)."""
@@ -212,22 +256,31 @@ def per_line_links(data: Data, rq: RankQuery, info: dict) -> tuple[pl.DataFrame,
     frames, days, links = ([t[i] for t in tables if t[i] is not None and t[i].height] for i in range(3))
     if not frames:
         return pl.DataFrame(), [], 0
+    want = None
+    if rq.lines:
+        want = list(rq.lines)
+    elif rq.mode != "all":
+        want = [ln for ln, v in info.items() if (v or {}).get("mode") == rq.mode]
     keep_date = (pl.col("service_date").is_between(rq.first, rq.last)
                  & pl.col("service_date").dt.weekday().sub(1).is_in(sorted(set(rq.dow)))
                  & ~pl.col("service_date").is_in(sorted(rq.exclusions(data))))
-    cube = pl.concat(frames, how="diagonal_relaxed").filter(keep_date)
     dd = pl.concat(days, how="diagonal_relaxed").filter(keep_date).unique()
     lines = dd["line"].cast(pl.Utf8).unique().to_list() if dd.height else []
-    if rq.mode != "all":
-        want = [ln for ln, v in info.items() if (v or {}).get("mode") == rq.mode]
-        cube, dd = cube.filter(pl.col("line").is_in(want)), dd.filter(pl.col("line").is_in(want))
-    if not cube.height:
+    if want is not None:
+        dd = dd.filter(pl.col("line").is_in(want))
+    if rq.hours == DAY_BAND:
+        cube = pl.concat(frames, how="diagonal_relaxed").filter(keep_date)
+        if want is not None:
+            cube = cube.filter(pl.col("line").is_in(want))
+        num = [c for c in cube.columns if c[:2] in ("o_", "l_", "p_")]
+        per = (cube.group_by("line", "link_key")
+               .agg([pl.col(c).sum().cast(pl.Float64) for c in num] + [(pl.col("p_day") > 0).sum().alias("n_days")]))
+    else:
+        per = _hourly_links(data, rq, keep_date, want)
+    if not per.height:
         return pl.DataFrame(), lines, 0
     D = dd.group_by("line").agg(pl.len().alias("D"))
-    num = [c for c in cube.columns if c[:2] in ("o_", "l_", "p_")]
-    s = (cube.group_by("line", "link_key")
-         .agg([pl.col(c).sum().cast(pl.Float64) for c in num] + [(pl.col("p_day") > 0).sum().alias("n_days")])
-         .join(D, on="line", how="inner").filter(pl.col("n_days") >= MIN_DAYS))
+    s = per.join(D, on="line", how="inner").filter(pl.col("n_days") >= MIN_DAYS)
     s = _reasons(_excess(s, rq.stops), links)
     return s, lines, s["line"].n_unique()
 

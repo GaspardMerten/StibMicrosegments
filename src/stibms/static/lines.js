@@ -4,12 +4,12 @@ import {XL} from "./excl.js?rev=__REV__";
 import {runLine} from "./lineview.js?rev=__REV__";
 
 export const lineOf = id => S.lines.find(l => l.line === id);
-const modeKey = l => /^N/i.test(l.line) ? "night" : (l.mode === "metro" || l.mode === "tram" || l.mode === "bus" ? l.mode : "autre");
+export const modeKey = l => /^N/i.test(l.line) ? "night" : (l.mode === "metro" || l.mode === "tram" || l.mode === "bus" ? l.mode : "autre");
 export function badge(l, cls = "lb") {
   const bg = l && l.color ? "#" + l.color : "#555", fg = l && l.text_color ? "#" + l.text_color : "#fff";
   return `<span class="${cls}" style="background:${bg};color:${fg}">${esc(l ? l.line : "?")}</span>`;
 }
-function niceName(n) {
+export function niceName(n) {
   if (!n) return "";
   return n.toLowerCase().replace(/(^|[\s\-'(])([a-zà-ÿ])/g, (m, a, b) => a + b.toUpperCase()).replace(/ - /g, " – ")
     .replace(/(?<=\S )(De|Du|Des|La|Le|Les|Et|Aux?|En|Sur)(?= )/g, w => w.toLowerCase())   // particles lowercase, not at the start

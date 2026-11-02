@@ -74,20 +74,31 @@ def _lock(key: str) -> threading.Lock:
         return _locks.setdefault(key, threading.Lock())
 
 
-def feed_trips(cal: pl.DataFrame, cal_dates: pl.DataFrame, trips: pl.DataFrame) -> pl.DataFrame:
-    """(date, trips): trips scheduled per date by one feed (calendar + calendar_dates)."""
+def feed_services(cal: pl.DataFrame, cal_dates: pl.DataFrame, span: tuple[dt.date, dt.date] | None = None) -> pl.DataFrame:
+    """(service_id, date): the services running per date (calendar + calendar_dates), within ``span`` if given."""
     rows = []
     for r in cal.iter_rows(named=True):
         if r["start_date"] is None or r["end_date"] is None:
             continue
-        for d in date_range(r["start_date"], r["end_date"]):
+        a, b = r["start_date"], r["end_date"]
+        if span is not None:
+            a, b = max(a, span[0]), min(b, span[1])
+        for d in date_range(a, b) if a <= b else []:
             if r[_DOW[d.weekday()]]:
                 rows.append((r["service_id"], d))
     on = pl.DataFrame(rows, schema={"service_id": pl.Utf8, "date": pl.Date}, orient="row")
     if cal_dates.height:
         cd = cal_dates.select(pl.col("service_id").cast(pl.Utf8), pl.col("date").cast(pl.Date), "exception_type")
+        if span is not None:
+            cd = cd.filter(pl.col("date").is_between(*span))
         on = pl.concat([on, cd.filter(pl.col("exception_type") == 1).select("service_id", "date")]).unique()
         on = on.join(cd.filter(pl.col("exception_type") == 2).select("service_id", "date"), on=["service_id", "date"], how="anti")
+    return on
+
+
+def feed_trips(cal: pl.DataFrame, cal_dates: pl.DataFrame, trips: pl.DataFrame) -> pl.DataFrame:
+    """(date, trips): trips scheduled per date by one feed."""
+    on = feed_services(cal, cal_dates)
     n = trips.select(pl.col("service_id").cast(pl.Utf8)).group_by("service_id").len()
     return (on.join(n, on="service_id").group_by("date").agg(pl.col("len").sum().cast(pl.Int64).alias("trips"))
             .sort("date"))
@@ -151,6 +162,89 @@ def day_trips(data: Data, first: dt.date, last: dt.date) -> dict[dt.date, int]:
         if v is not None:
             out[d] = int(v)
     return out
+
+
+# ---------------------------------------------------------------------------------- km planned
+def shape_km(shapes: pl.DataFrame) -> pl.DataFrame:
+    """(shape_id, km): the length of each shape from its points (the feeds' shape_dist_traveled is optional)."""
+    s = shapes.sort("shape_id", "shape_pt_sequence")
+    lat, lon = pl.col("shape_pt_lat").cast(pl.Float64).radians(), pl.col("shape_pt_lon").cast(pl.Float64).radians()
+    dlat, dlon = (lat - lat.shift()).over("shape_id"), (lon - lon.shift()).over("shape_id")
+    # equirectangular: points metres apart, latitude ~50.8 degrees everywhere
+    d = 6371.0088 * (dlat.pow(2) + (dlon * lat.cos()).pow(2)).sqrt()
+    return s.with_columns(d.fill_null(0).alias("_d")).group_by("shape_id").agg(pl.col("_d").sum().alias("km"))
+
+
+def trip_hours(trips: pl.DataFrame) -> pl.DataFrame:
+    """Trips (start_s, end_s, km, ...) -> one row per hour they run in, ``km`` shared in proportion of
+    the time in that hour; ``trips`` counts each trip in its first hour. A trip of no duration stays in one."""
+    t = trips.with_columns((pl.col("start_s") // 3600).cast(pl.Int32).alias("_h0"),
+                           (pl.max_horizontal(pl.col("end_s") - 1, pl.col("start_s")) // 3600).cast(pl.Int32).alias("_h1"))
+    x = t.with_columns(pl.int_ranges(pl.col("_h0"), pl.col("_h1") + 1).alias("hour")).explode("hour")
+    span = (pl.col("end_s") - pl.col("start_s")).cast(pl.Float64)
+    inside = (pl.min_horizontal(pl.col("end_s"), (pl.col("hour") + 1) * 3600) - pl.max_horizontal(pl.col("start_s"), pl.col("hour") * 3600)).cast(pl.Float64)
+    return x.with_columns(pl.when(span > 0).then(pl.col("km") * inside / span).otherwise(pl.col("km")).alias("km"),
+                          (pl.col("hour") == pl.col("_h0")).cast(pl.Int32).alias("trips")).drop("_h0", "_h1")
+
+
+def feed_plan(store, sha: str, span: tuple[dt.date, dt.date] | None = None) -> tuple[pl.DataFrame, pl.DataFrame] | None:
+    """(services per date, km and trips per (service_id, line, hour)) of a feed, None when it misses a table."""
+    base = f"gtfs/feeds/{sha}"
+    try:
+        cd = store.read_parquet(f"{base}/calendar_dates.parquet")
+    except FileNotFoundError:
+        cd = pl.DataFrame(schema={"service_id": pl.Utf8, "date": pl.Date, "exception_type": pl.Int8})
+    try:
+        on = feed_services(store.read_parquet(f"{base}/calendar.parquet"), cd, span)
+        trips = store.read_parquet(f"{base}/trips.parquet", columns=["trip_id", "route_id", "service_id", "shape_id"])
+        routes = store.read_parquet(f"{base}/routes.parquet", columns=["route_id", "route_short_name"])
+        shapes = store.read_parquet(f"{base}/shapes.parquet", columns=["shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence"])
+        st = store.read_parquet(f"{base}/stop_times.parquet", columns=["trip_id", "arrival_time", "departure_time"])
+    except FileNotFoundError:
+        return None
+    sec = lambda c: pl.col(c).dt.total_seconds().cast(pl.Int64)  # noqa: E731
+    span = st.group_by("trip_id").agg(sec("departure_time").min().alias("start_s"), sec("arrival_time").max().alias("end_s"))
+    t = (trips.join(span, on="trip_id", how="inner").join(shape_km(shapes), on="shape_id", how="left")
+         .join(routes.select("route_id", pl.col("route_short_name").cast(pl.Utf8).alias("line")), on="route_id", how="inner")
+         .with_columns(pl.col("km").fill_null(0.0), pl.col("service_id").cast(pl.Utf8)))
+    per = (trip_hours(t.select("service_id", "line", "start_s", "end_s", "km"))
+           .group_by("service_id", "line", "hour").agg(pl.col("km").sum(), pl.col("trips").sum()))
+    return on, per
+
+
+def plan_month(data: Data, dates) -> pl.DataFrame:
+    """(line, service_date, hour, km, trips): the timetable of ``dates``, each date by the feed in force,
+    or the next or previous one when its calendar stops short of the date (as :func:`day_trips`).
+    Hours follow the service day: 24 and more are after midnight."""
+    schema = {"line": pl.Utf8, "service_date": pl.Date, "hour": pl.Int8, "km": pl.Float32, "trips": pl.Int32}
+    idx = data.gtfs_index()
+    if not idx.height or not dates:
+        return pl.DataFrame(schema=schema)
+    days, shas = idx["service_date"].to_list(), idx["sha"].to_list()
+    order = list(dict.fromkeys(shas))
+    pos = {s: i for i, s in enumerate(order)}
+    feeds: dict[str, tuple | None] = {}
+
+    def feed(s):
+        if s not in feeds:
+            feeds[s] = feed_plan(data.store, s, (dates[0], dates[-1]))
+        return feeds[s]
+    out = []
+    for d in dates:
+        i = pos[shas[max(0, bisect_right(days, d) - 1)]]
+        for j in (i, i + 1, i + 2, i - 1):
+            f = feed(order[j]) if 0 <= j < len(order) else None
+            if f is None:
+                continue
+            svc = f[0].filter(pl.col("date") == d)
+            if svc.height:
+                g = (f[1].join(svc.select("service_id"), on="service_id", how="inner").group_by("line", "hour")
+                     .agg(pl.col("km").sum(), pl.col("trips").sum()))
+                out.append(g.with_columns(pl.lit(d, pl.Date).alias("service_date")))
+                break
+    if not out:
+        return pl.DataFrame(schema=schema)
+    return pl.concat(out).select("line", "service_date", pl.col("hour").cast(pl.Int8), pl.col("km").cast(pl.Float32), pl.col("trips").cast(pl.Int32))
 
 
 def _q(vals: list[int]) -> int:

@@ -35,6 +35,16 @@ def dows(s: str) -> tuple[int, ...]:
     return tuple(sorted(set(ints(s, "dow"))))
 
 
+def hour_span(s: str) -> tuple[int, int]:
+    """``6-21`` -> (6, 21)."""
+    return tuple(int(x) for x in pair(s, "hours", int, sep="-"))
+
+
+def line_list(s: str | None) -> tuple[str, ...]:
+    """``55, 81`` -> ('55', '81'), sorted, each once."""
+    return tuple(sorted({x.strip() for x in (s or "").split(",") if x.strip()}))
+
+
 def pair(s: str, name: str, cast=float, sep=None) -> tuple:
     for c in [sep] if sep else [",", "-", ":"]:
         if c in s:

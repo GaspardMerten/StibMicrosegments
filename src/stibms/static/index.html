@@ -77,25 +77,41 @@
     <div class="bar">
       <p class="lede" id="rlede"></p>
       <form id="rf" autocomplete="off">
+        <div class="fld"><span>Réseau</span><div class="seg" id="rmode"></div></div>
+        <div class="fld picker"><span>Lignes</span>
+          <button type="button" class="linebtn rlinebtn" id="rlinebtn" aria-haspopup="listbox" aria-expanded="false"><span class="rbadges" id="rbadges"></span></button>
+          <div class="panel" id="rpanel" hidden>
+            <div class="rphead"><input type="search" id="rlsearch" placeholder="Numéro ou nom de ligne" aria-label="Chercher une ligne"><button type="button" class="mini" id="rlclear">Toutes</button></div>
+            <div id="rlgroups" role="listbox" aria-multiselectable="true" aria-label="Lignes"></div>
+          </div>
+        </div>
         <div class="fld"><span>Période</span>
           <div class="dates"><input type="date" id="rfrom" aria-label="Du"><em>→</em><input type="date" id="rto" aria-label="Au"></div></div>
-        <div class="fld"><span>Mode</span><div class="seg" id="rmode"></div></div>
-        <label class="fld"><span>Tronçons</span><select id="rtop"><option>20</option><option selected>50</option><option>100</option></select></label>
-        <button class="go" id="rgo" type="submit">Classer</button>
-        <div class="rkopts">
-          <label class="check"><input type="checkbox" id="rterm"> Inclure les terminus et les attentes pour l'horaire</label>
-        </div>
+        <div class="fld"><span>Heures</span>
+          <div class="dates"><select id="rh0" aria-label="De"></select><em>→</em><select id="rh1" aria-label="À"></select></div></div>
+        <div class="fld"><span>Jours</span><div class="dow" id="rdow"></div></div>
+        <div class="presets" id="rpresets"></div>
+        <button class="go" id="rgo" type="submit">Afficher</button>
         <details class="more" id="rmore">
-          <summary>Options (jours, jours exclus) · <span class="xsum" id="rxsum"></span></summary>
+          <summary>Options (jours exclus, terminus) · <span class="xsum" id="rxsum"></span></summary>
           <div class="opts">
-            <div class="fld"><span>Jours</span><div class="dow" id="rdow"></div></div>
             <div class="fld"><span>Jours exclus</span><div class="xbox" id="rxbox"></div></div>
+            <label class="check"><input type="checkbox" id="rterm"> Classement : inclure les terminus et les attentes pour l'horaire</label>
           </div>
         </details>
       </form>
     </div>
     <div id="rstatus" role="status" aria-live="polite" style="margin:12px 0 4px"></div>
-    <div id="rout"></div>
+    <div id="rall">
+      <div id="rnet"></div>
+      <div id="rmaphead" class="sechead" hidden>
+        <h2>Sur la carte</h2>
+        <label class="fld inl"><span>Période affichée</span><select id="rfocus"></select></label>
+        <div class="fld inl"><span>Couleur</span><div class="seg" id="rmetric"><button type="button" data-m="v" aria-pressed="true">Vitesse avec arrêts</button><button type="button" data-m="vr" aria-pressed="false">Vitesse entre arrêts</button></div></div>
+        <label class="fld inl"><span>Tronçons listés</span><select id="rtop"><option>20</option><option selected>50</option><option>100</option></select></label>
+      </div>
+      <div id="rout"></div>
+    </div>
   </section>
 
   <footer>Données : STIB vehicle-distance et punctuality via <a href="https://mobilitytwin.brussels">MobilityTwin.Brussels</a>, GTFS STIB. Paquet open source <a href="https://github.com/GaspardMerten/microsegments">microsegments</a> · <a href="/api/docs">API</a>.<br>Réalisé par <a href="https://www.linkedin.com/in/gaspard-merten/" target="_blank" rel="noopener">Gaspard Merten</a>.</footer>
@@ -110,6 +126,8 @@
 <link rel="modulepreload" href="/static/lineview.js?rev=__REV__">
 <link rel="modulepreload" href="/static/lines.js?rev=__REV__">
 <link rel="modulepreload" href="/static/rank.js?rev=__REV__">
+<link rel="modulepreload" href="/static/net.js?rev=__REV__">
+<link rel="modulepreload" href="/static/charts.js?rev=__REV__">
 <link rel="modulepreload" href="/static/sel.js?rev=__REV__">
 <link rel="modulepreload" href="/static/stale.js?rev=__REV__">
 <script type="module" src="/static/main.js?rev=__REV__"></script>

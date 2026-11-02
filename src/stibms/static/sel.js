@@ -26,8 +26,10 @@ function lineItems() {
 }
 function rankItems() {
   const mode = $("rmode").querySelector("[aria-pressed=true]");
-  return [item("Mode", esc(mode ? mode.textContent : "Tous")), item("Période", span($("rfrom").value, $("rto").value)),
-    item("Jours", esc(dowText($("rdow")))), item("", esc(XR.text())), item("", `${esc($("rtop").value)} tronçons`),
+  const ln = [...$("rbadges").querySelectorAll(".lb")].slice(0, 6).map(b => b.outerHTML).join("");
+  return [mode ? item("Réseau", esc(mode.textContent)) : `<span class="si sl">${ln}</span>`,
+    item("Période", span($("rfrom").value, $("rto").value)), item("Heures", esc(`${$("rh0").value} h → ${$("rh1").value} h`)),
+    item("Jours", esc(dowText($("rdow")))), item("", esc(XR.text())),
     ...($("rterm").checked ? [item("", "terminus inclus")] : [])];
 }
 function draw() {

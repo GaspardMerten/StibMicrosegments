@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query as Q, Request
 
 from .cache import Result, respond
 from .context import state
-from .params import build, dows, parse_date, periods
+from .params import build, dows, hour_span, line_list, parse_date, periods
 
 router = APIRouter()
 
@@ -13,7 +13,9 @@ router = APIRouter()
 def rank_query(from_: str | None = Q(None, alias="from"), to: str | None = None,
                dow: str = Q("0-4"), holidays: str = Q("exclude"), mode: str = Q("all"), top: int = Q(50),
                terminus: bool = Q(False), stops: bool = Q(False), school: str = Q("include"),
-               reduced: str = Q("exclude"), exclude: str = Q("")):
+               reduced: str = Q("exclude"), exclude: str = Q(""),
+               hours: str = Q("6-21", description="hours a-b compared with the evening, b excluded"),
+               lines: str = Q("", description="only these lines, 55,81 (the mode is then ignored)")):
     """(RankQuery, top); the default window when from / to are omitted."""
     from .. import ranking as R
     top = max(5, min(int(top), 200))
@@ -24,7 +26,8 @@ def rank_query(from_: str | None = Q(None, alias="from"), to: str | None = None,
             raise HTTPException(404, "aucun mois complet calculé pour l'instant : données en cours de préparation")
         a, b = a or w[0], b or w[1]
     rq = build(R.RankQuery, first=a, last=b, dow=dows(dow), holidays=holidays, mode=mode, terminus=terminus,
-               stops=stops, school=school, reduced=reduced, exclude=periods(exclude))
+               stops=stops, school=school, reduced=reduced, exclude=periods(exclude),
+               hours=hour_span(hours), lines=line_list(lines))
     return rq, top
 
 

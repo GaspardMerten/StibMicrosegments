@@ -22,7 +22,13 @@ Endpoints (dates YYYY-MM-DD, ``dow`` as ``0-4`` or ``0,2,4`` with 0 = Monday):
     GET /api/tune?...&lengths=15,20,30,40,50  segment-length criteria (slow, cached)
     GET /api/compare?line&a=D1..D2&b=D3..D4&dow&holidays&seg&...
                                               period B's contract + the ``compare`` section
-    GET /api/ranking?from&to&dow&holidays&school&reduced&exclude&mode=all|tram|bus|metro&top=50&stops=false&terminus=false
+    GET /api/network?from&to&dow&hours=6-21&holidays&school&reduced&exclude&mode=all|bus|tram|metro&lines=55,81
+                                              speed with / without stop zones, km planned and run, per month
+                                              and period, per mode, for the network and the lines asked for
+                                              (stibms.network); default: the last 12 months
+    GET /api/network/map?... (at most 400 days)
+                                              speed per link of the selection
+    GET /api/ranking?from&to&dow&hours=6-21&lines=55,81&holidays&school&reduced&exclude&mode=all|tram|bus|metro&top=50&stops=false&terminus=false
                                               costliest stretches of the network (vehicle-hours lost
                                               per day, between stops unless stops=true; termini and
                                               timing stops (vehicles waiting for the schedule) left out unless terminus=true);
@@ -55,7 +61,7 @@ Memory (2 GiB per instance): an analysis keeps no Run (only its JSON), networks 
 
 Modules: ``context`` (state, HEAVY, warm-up), ``params`` (query strings), ``cache`` (stamps, keys,
 Cache-Control, result cache), routes in ``meta`` (health, lines, status), ``line`` (one line, two
-periods), ``rank`` (ranking) and ``pages`` (the pages and static files).
+periods), ``rank`` (ranking), ``network`` (the network page's indicators) and ``pages`` (the pages and static files).
 """
 from __future__ import annotations
 
@@ -65,7 +71,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
-from . import line, meta, pages, rank
+from . import line, meta, network, pages, rank
 from .cache import RESULT_REV, rev  # noqa: F401 - part of the API module's surface
 from .context import log, start_warm, state  # noqa: F401
 
@@ -77,7 +83,7 @@ async def _lifespan(app):
 
 
 app = FastAPI(title="STIB microsegments", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=_lifespan)
-for _m in (meta, line, rank, pages):
+for _m in (meta, line, rank, network, pages):
     app.include_router(_m.router)
 # pages, scripts, lines; skips the cached results, already gzipped (Content-Encoding set)
 app.add_middleware(GZipMiddleware, minimum_size=1024)

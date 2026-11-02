@@ -1,91 +1,230 @@
-// ---------------------------------------------------------------- ranking
-import {$, DOW, busy, done, dowGet, esc, fdate, getJSON, nf, selChanged} from "./util.js?rev=__REV__";
+// ---------------------------------------------------------------- network page: selection, indicators, map, ranking
+import {$, DOW, MODE_FR, S, busy, done, dowGet, esc, fdate, fmonth, getJSON, monthEnd, nf, selChanged} from "./util.js?rev=__REV__";
 import {XR} from "./excl.js?rev=__REV__";
-import {badge, lineOf} from "./lines.js?rev=__REV__";
+import {badge, lineOf, modeKey, niceName} from "./lines.js?rev=__REV__";
 import {REASONS} from "./quality.js?rev=__REV__";
 import {ran, watch} from "./stale.js?rev=__REV__";
+import {drawNet, setFocus} from "./net.js?rev=__REV__";
 
 const L = window.L;     // Leaflet: a classic script in the page's head
-const RMODES = [["all", "Tous"], ["tram", "Tram"], ["bus", "Bus"], ["metro", "Métro"]];
+const RMODES = [["all", "Tout"], ["bus", "Bus"], ["tram", "Tram"], ["metro", "Métro"]];
+const DEF_HOURS = [6, 21];
+const HPRESETS = [["Journée", 6, 21], ["Pointe du matin", 7, 10], ["Pointe du soir", 16, 19], ["Soirée", 20, 24], ["Tout le service", 4, 28]];
+const hourLab = h => h < 24 ? `${h} h` : h === 24 ? "minuit" : `${h - 24} h (nuit)`;
+const v = {lines: new Set(), focusAsked: null, metric: "v", R: null, RK: null, MP: null};
+
+// ---------------------------------------------------------------- form
 $("rmode").innerHTML = RMODES.map(([k, t]) => `<button type="button" data-mode="${k}" aria-pressed="${k === "all"}">${t}</button>`).join("");
-$("rmode").addEventListener("click", e => {
+const fillHours = (el, a, b, d) => { el.innerHTML = Array.from({length: b - a + 1}, (_, i) => a + i).map(h => `<option value="${h}"${h === d ? " selected" : ""}>${hourLab(h)}</option>`).join(""); };
+fillHours($("rh0"), 4, 27, DEF_HOURS[0]); fillHours($("rh1"), 5, 28, DEF_HOURS[1]);
+$("rpresets").innerHTML = `<span class="lbl">Heures</span>` + HPRESETS.map(([t, a, b]) => `<button type="button" data-h0="${a}" data-h1="${b}">${t}</button>`).join("")
+  + `<span class="lbl gap">Période</span><button type="button" data-p="12">12 derniers mois</button><button type="button" data-p="all">Tout</button>`;
+function hourState() {
+  $("rpresets").querySelectorAll("[data-h0]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.h0 === $("rh0").value && b.dataset.h1 === $("rh1").value)));
+}
+function rangeHours(changed) {
+  if (+$("rh1").value <= +$("rh0").value) {
+    if (changed === "rh0") $("rh1").value = Math.min(28, +$("rh0").value + 1);
+    else $("rh0").value = Math.max(4, +$("rh1").value - 1);
+  }
+  hourState();
+}
+$("rh0").addEventListener("change", () => rangeHours("rh0"));
+$("rh1").addEventListener("change", () => rangeHours("rh1"));
+$("rpresets").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
-  $("rmode").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  if (b.dataset.h0) { $("rh0").value = b.dataset.h0; $("rh1").value = b.dataset.h1; hourState(); }
+  if (b.dataset.p === "12") { $("rfrom").value = ""; $("rto").value = ""; }
+  if (b.dataset.p === "all") { $("rfrom").value = S.info.ingested.from; $("rto").value = S.info.ingested.to; }
+  v.focusAsked = null;
   runRank();
 });
-const rmode = () => ($("rmode").querySelector("[aria-pressed=true]") || {}).dataset?.mode || "all";
+const rmode = () => ($("rmode").querySelector("[aria-pressed=true]") || {}).dataset?.mode || null;
+function setMode(m) { $("rmode").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.mode === m))); }
+$("rmode").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  setMode(b.dataset.mode); v.lines.clear(); drawBadges(); runRank();
+});
+// ---------------------------------------------------------------- lines: any set of lines
+function drawBadges() {
+  const ids = [...v.lines];
+  if (!ids.length) { const m = rmode(); $("rbadges").textContent = !m || m === "all" ? "Toutes les lignes" : `Toutes les lignes (${MODE_FR[m].toLowerCase()})`; return; }
+  const shown = ids.slice(0, 7);
+  $("rbadges").innerHTML = shown.map(id => badge(lineOf(id) || {line: id})).join("") + (ids.length > shown.length ? `<span class="more-n">+${ids.length - shown.length}</span>` : "");
+}
+function drawLinePicker(filter = "") {
+  const f = filter.trim().toLowerCase(), groups = {};
+  for (const l of S.lines) {
+    if (f && !(l.line.toLowerCase().startsWith(f) || (l.name || "").toLowerCase().includes(f))) continue;
+    (groups[modeKey(l)] ||= []).push(l);
+  }
+  $("rlgroups").innerHTML = ["metro", "tram", "bus", "night", "autre"].filter(m => groups[m]).map(m =>
+    `<div class="rpg"><h4>${MODE_FR[m]}</h4><button type="button" class="mini" data-group="${m}">Toutes</button></div><div class="chips">` + groups[m].map(l =>
+      `<button type="button" class="chip" role="option" data-line="${esc(l.line)}" aria-selected="${v.lines.has(l.line)}" aria-disabled="${!l.available}" title="${esc(l.line + " · " + niceName(l.name))}">${badge(l)}</button>`).join("") + "</div>").join("")
+    || `<p class="lbl" style="margin:8px 0">Aucune ligne ne correspond.</p>`;
+}
+function toggleLines(ids, on) {
+  for (const id of ids) on ? v.lines.add(id) : v.lines.delete(id);
+  setMode(v.lines.size ? null : "all");
+  drawBadges(); drawLinePicker($("rlsearch").value);
+  $("rf").dispatchEvent(new Event("change"));
+}
+$("rlinebtn").addEventListener("click", () => {
+  const open = $("rpanel").hidden;
+  $("rpanel").hidden = !open; $("rlinebtn").setAttribute("aria-expanded", String(open));
+  if (open) { drawLinePicker($("rlsearch").value); setTimeout(() => $("rlsearch").focus(), 0); }
+});
+$("rlsearch").addEventListener("input", e => drawLinePicker(e.target.value));
+$("rlsearch").addEventListener("keydown", e => { if (e.key === "Enter") e.preventDefault(); if (e.key === "Escape") closePicker(); });
+$("rlclear").addEventListener("click", () => toggleLines([...v.lines], false));
+$("rlgroups").addEventListener("click", e => {
+  const c = e.target.closest(".chip");
+  if (c) { if (c.getAttribute("aria-disabled") !== "true") toggleLines([c.dataset.line], !v.lines.has(c.dataset.line)); return; }
+  const g = e.target.closest("[data-group]");
+  if (g) { const ids = S.lines.filter(l => modeKey(l) === g.dataset.group && l.available).map(l => l.line); toggleLines(ids, !ids.every(i => v.lines.has(i))); }
+});
+function closePicker() {
+  if ($("rpanel").hidden) return;
+  $("rpanel").hidden = true; $("rlinebtn").setAttribute("aria-expanded", "false");
+}
+document.addEventListener("click", e => { if (!e.target.closest("#rf .picker") && e.target.isConnected) closePicker(); });
+
+// the form from the URL (main.js)
+export function setNetState(u) {
+  v.lines = new Set((u.get("lines") || "").split(",").filter(Boolean));
+  setMode(v.lines.size ? null : u.get("mode") || "all");
+  const [a, b] = (u.get("hours") || "").split("-").map(Number);
+  $("rh0").value = a >= 4 && a <= 27 ? a : DEF_HOURS[0]; $("rh1").value = b >= 5 && b <= 28 ? b : DEF_HOURS[1];
+  rangeHours("rh1");
+  v.focusAsked = u.get("focus");
+  v.metric = u.get("metric") === "vr" ? "vr" : "v";
+  $("rmetric").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.m === v.metric)));
+  drawBadges();
+}
+// what the form asks for (the sticky bar and the "settings changed" hint read this)
 function rankParams() {
   const p = new URLSearchParams();
   if ($("rfrom").value) p.set("from", $("rfrom").value);
   if ($("rto").value) p.set("to", $("rto").value);
   p.set("dow", dowGet($("rdow")));
-  p.set("mode", rmode()); p.set("top", $("rtop").value);
+  p.set("hours", `${$("rh0").value}-${$("rh1").value}`);
+  if (v.lines.size) p.set("lines", [...v.lines].join(",")); else p.set("mode", rmode() || "all");
   if ($("rterm").checked) p.set("terminus", "true");
   return XR.params(p);
 }
-let RMAP = null, RLAYERS = [], RK = 0;
+// the displayed window of a focus: a month within the period, or the period
+function focusWindow(f, q) {
+  if (f === "all" || !f) return [q.first, q.last];
+  const a = f + "-01", b = monthEnd(f);
+  return [a < q.first ? q.first : a, b > q.last ? q.last : b];
+}
+function pushUrl() {
+  const p = rankParams();
+  if (v.focus) p.set("focus", v.focus);
+  if (v.metric !== "v") p.set("metric", v.metric);
+  if ($("rtop").value !== "50") p.set("top", $("rtop").value);
+  history.replaceState(null, "", "/classement?" + p);
+}
+
+// ---------------------------------------------------------------- run: indicators, then map + ranking
+let NK = 0, FK = 0;
 export async function runRank() {
   const p = rankParams();
-  history.replaceState(null, "", "/classement?" + p);
-  const me = ++RK;
+  const me = ++NK;
   ran("rf", p);
   selChanged(true);
   $("rgo").disabled = true;
-  busy($("rstatus"), "Classement en cours", "");
+  $("rall").classList.add("loading");
+  busy($("rstatus"), "Calcul des indicateurs", "");
   try {
-    const R = await getJSON("/api/ranking?" + p);
-    if (me !== RK) return;
-    drawRank(R);
-    selChanged();     // the dates of the default window
+    const R = await getJSON("/api/network?" + p);
+    if (me !== NK) return;
+    v.R = R;
+    if (!$("rfrom").value) $("rfrom").value = R.query.first;
+    if (!$("rto").value) $("rto").value = R.query.last;
+    ran("rf", rankParams());
+    if (!R.months.length) {
+      $("rnet").innerHTML = `<div class="notice">Aucune donnée calculée sur cette période.</div>`;
+      $("rout").innerHTML = ""; $("rmaphead").hidden = true;
+      done($("rstatus"), "");
+      return;
+    }
+    pickFocus(R);
+    drawNet(R, v.focus, chooseFocus);
+    selChanged();
+    done($("rstatus"), "");
+    await runFocus();
+  } catch (e) {
+    if (me === NK) { done($("rstatus"), esc(e.message), true); $("rnet").innerHTML = ""; $("rout").innerHTML = ""; }
+  } finally {
+    if (me === NK) { $("rgo").disabled = false; $("rall").classList.remove("loading"); }
+  }
+}
+function pickFocus(R) {
+  const ms = R.months, spanDays = (new Date(R.query.last) - new Date(R.query.first)) / 864e5;
+  const complete = [...ms].reverse().find(m => m.complete) || ms[ms.length - 1];
+  const asked = v.focusAsked;
+  v.focus = asked === "all" && spanDays <= 400 ? "all" : ms.some(m => m.month === asked) ? asked : complete.month;
+  v.focusAsked = v.focus;
+  $("rfocus").innerHTML = [...ms].reverse().map(m => `<option value="${m.month}">${esc(fmonth(m.month))}</option>`).join("")
+    + (spanDays <= 400 ? `<option value="all">Toute la période</option>` : "");
+  $("rfocus").value = v.focus;
+  $("rmaphead").hidden = false;
+}
+function chooseFocus(f) {
+  v.focus = v.focusAsked = f;
+  $("rfocus").value = f;
+  setFocus(f);
+  runFocus();
+}
+$("rfocus").addEventListener("change", e => chooseFocus(e.target.value));
+$("rtop").addEventListener("change", () => runFocus());
+$("rterm").addEventListener("change", () => runRank());
+$("rmetric").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  v.metric = b.dataset.m;
+  $("rmetric").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  paintBase(); pushUrl();
+});
+async function runFocus() {
+  const q = v.R.query, [a, b] = focusWindow(v.focus, q), base = rankParams();
+  base.set("from", a); base.set("to", b);
+  const rp = new URLSearchParams(base); rp.set("top", $("rtop").value);
+  rp.delete("mode"); if (!v.lines.size) rp.set("mode", rmode() || "all");
+  const me = ++FK;
+  pushUrl();
+  $("rout").classList.add("loading");
+  busy($("rstatus"), "Carte et classement", "");
+  try {
+    const [RK, MP] = await Promise.all([getJSON("/api/ranking?" + rp), getJSON("/api/network/map?" + base)]);
+    if (me !== FK) return;
+    v.RK = RK; v.MP = MP;
+    drawRank(RK, MP);
     done($("rstatus"), "");
   } catch (e) {
-    if (me === RK) { done($("rstatus"), esc(e.message), true); $("rout").innerHTML = ""; }
+    if (me === FK) { done($("rstatus"), esc(e.message), true); $("rout").innerHTML = ""; }
   }
-  if (me === RK) $("rgo").disabled = false;
+  if (me === FK) $("rout").classList.remove("loading");
 }
 $("rf").addEventListener("submit", e => { e.preventDefault(); runRank(); });
-$("rterm").addEventListener("change", runRank);
-$("rtop").addEventListener("change", runRank);
-watch("rf", rankParams, "rout");
+watch("rf", rankParams, "rall");
+$("rlede").textContent = "Vitesses et kilomètres de la STIB, mois par mois, pour tout le réseau, un mode ou les lignes de votre choix. La carte situe les ralentissements, le classement liste les tronçons où l'on perd le plus de temps.";
 
-// ranking intro, for a first visit: what a stretch is, what the value means, the period
-function rlede(termIn) {
-  return "Un tronçon est le trajet entre deux arrêts qui se suivent. Pour chacun, on compte le temps que les trams, bus et métros"
-    + " y perdent chaque jour entre 6 h et 21 h, par rapport à la soirée (20 h–minuit), en additionnant toutes les lignes qui y passent."
-    + " Le temps passé à l'arrêt n'est pas compté" + (termIn ? "." : ", ni les terminus et les attentes pour l'horaire.")
-    + " Par défaut, la période est le dernier mois complet, du lundi au vendredi.";
-}
-$("rlede").textContent = rlede(false);
-function heat(t) {
-  const s = [[255, 230, 0], [253, 141, 60], [227, 26, 28], [189, 0, 90]];
-  t = Math.max(0, Math.min(1, t)) * (s.length - 1);
-  const i = Math.min(Math.floor(t), s.length - 2), u = t - i;
-  return `rgb(${s[i].map((a, k) => Math.round(a + (s[i + 1][k] - a) * u)).join(",")})`;
-}
+// ---------------------------------------------------------------- ranking
 const RREASON = {terminus: "terminus", short_terminus: "terminus partiel", holding: "attente pour l'horaire"};
 const RREASON_LONG = {terminus: "terminus de la ligne (pause entre deux courses)", short_terminus: "terminus partiel : des véhicules y stationnent plus de 3 min",
   holding: "arrêt où des véhicules attendent plus de 3 min pour respecter l'horaire"};
 const PHONE = matchMedia("(max-width:600px)");
 const PEAK = {am: "surtout le matin", pm: "surtout le soir", day: "toute la journée"};
-// lines of the window the line list (latest GTFS) no longer has: why "sur 89" when the list shows 87
-const goneTxt = g => g && g.length ? `, dont ${g.length} hors du réseau actuel (${g.map(esc).join(", ")})` : "";
-// the sentence above the tiles: period, days, exclusions, mode, and what the top stretches cost
-function rankSummary(R, S, top, modeTxt) {
+const hoursOf = q => (q.hours || DEF_HOURS);
+const hrange = q => { const [a, b] = hoursOf(q); return `entre ${hourLab(a)} et ${hourLab(b)}`; };
+function rankSummary(R, S_, top, modeTxt) {
   const q = R.query;
   const daysTxt = q.dow.length === 5 && q.dow.join() === "0,1,2,3,4" ? "jours ouvrables" : "jours " + q.dow.map(d => DOW[d]).join(", ");
-  // days left out on purpose, worded as on the line page
   const xd = Object.entries(R.days_excluded || {}).map(([k, n]) => `${n} ${(REASONS[k] || [k, k])[n > 1 ? 1 : 0]}`);
   const exTxt = xd.length ? ` hors ${xd.join(", ")}` : "";
-  return `
-    <p class="rk-sum">Du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b>, ${daysTxt}${exTxt}, ${modeTxt} (${R.lines_used} lignes) :
-      les ${S.length} tronçons les plus coûteux font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> entre les arrêts par rapport à la soirée (20 h–minuit),
-      soit environ <b>${nf(Math.round(top * R.days_per_year / 100) * 100, 0)} heures par an</b>.</p>
-    <div class="tiles">
-      <div class="tile"><b>${nf(S[0].veh_h_day, 1)} h</b><span>par jour sur le tronçon n° 1, ${esc(S[0].from)} → ${esc(S[0].to)}</span></div>
-      <div class="tile"><b>${nf(top, 0)} h</b><span>par jour sur les ${S.length} premiers tronçons</span></div>
-      <div class="tile"><b>${nf(R.total_veh_h_day, 0)} h</b><span>par jour sur tout le réseau (tronçons en perte)</span></div>
-      <div class="tile"><b>${R.lines_used}</b><span>lignes analysées${R.lines_total > R.lines_used ? ` sur ${R.lines_total}` : ""}${goneTxt(R.lines_gone)}</span></div>
-    </div>`;
+  return `<p class="rk-sum">Du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b>, ${daysTxt}${exTxt}, ${modeTxt} (${R.lines_used} ligne${R.lines_used > 1 ? "s" : ""}) :
+      les ${S_.length} premiers tronçons font perdre <b>${nf(top, 0)} heures-véhicule par jour</b> ${hrange(q)}, entre les arrêts, par rapport à la soirée (20 h–minuit). C'est ${nf(Math.min(100, 100 * top / Math.max(R.total_veh_h_day, 1e-9)), 0)} % du temps perdu sur l'ensemble de la sélection (${nf(R.total_veh_h_day, 0)} heures).</p>`;
 }
 // one row per stretch; its line badges open the line page with the same days and exclusions
 function rankRows(R, S, max) {
@@ -108,29 +247,37 @@ function rankExcluded(ex) {
   return `<details class="rk-ex"${PHONE.matches ? "" : " open"}><summary><b>${nf(ex.n)} tronçon${ex.n > 1 ? "s" : ""} laissé${ex.n > 1 ? "s" : ""} de côté</b> (${nf(ex.veh_h_day, 0)} h-véh. / jour)<span class="ex-why"> : terminus ou attente volontaire pour l'horaire, pas un ralentissement. Les principaux :</span></summary>
       <ul>${ex.top.map(x => `<li>${esc(x.from)} → ${esc(x.to)} (${x.lines.map(y => esc(y.line)).join(", ")}) : ${nf(x.veh_h_day, 1)} h / jour, ${nf(x.s_per_passage, 0)} s perdues par véhicule · ${x.reasons.map(r => esc(RREASON_LONG[r] || r)).join(" ; ")}</li>`).join("")}</ul></details>`;
 }
-function drawRank(R) {
-  const q = R.query, S = R.stretches || [];
-  if (!$("rfrom").value) $("rfrom").value = q.first;
-  if (!$("rto").value) $("rto").value = q.last;
-  $("rlede").textContent = rlede(!!q.terminus);
-  const modeTxt = {all: "toutes les lignes", tram: "les trams", bus: "les bus", metro: "le métro"}[q.mode];
-  if (!S.length) {
-    // metro: every position falls in a stop zone, so nothing is measured between stations
-    const why = q.mode === "metro" && R.lines_used ? " Pour le métro, la STIB n'envoie que des positions aux stations : on ne peut pas mesurer la vitesse entre deux stations." : "";
-    $("rout").innerHTML = `<div class="notice">Aucun tronçon en perte de temps pour ${modeTxt} sur cette période (${R.lines_used} ligne${R.lines_used > 1 ? "s" : ""} avec des données).${why}</div>`;
-    return;
+const KMH = [[4.5, "#7a1020"], [7.5, "#e5484d"], [10.5, "#f0a13a"], [13.5, "#b8e27f"], [16.5, "#3fb950"], [21, "#1f8f45"], [27, "#11683e"]];
+const NULLC = "#3a4560", METROC = "#8f9ab2";
+// the site's speed scale (same stops as the line page), in sRGB: enough for a map
+function kmhColor(k) {
+  if (k == null) return NULLC;
+  if (k <= KMH[0][0]) return KMH[0][1];
+  for (let i = 0; i < KMH.length - 1; i++) {
+    if (k <= KMH[i + 1][0]) {
+      const u = (k - KMH[i][0]) / (KMH[i + 1][0] - KMH[i][0]), hx = h => [1, 3, 5].map(j => parseInt(h.slice(j, j + 2), 16));
+      const A = hx(KMH[i][1]), B = hx(KMH[i + 1][1]);
+      return `rgb(${A.map((a, j) => Math.round(a + (B[j] - a) * u)).join(",")})`;
+    }
   }
-  const top = S.reduce((a, s) => a + Math.max(0, s.veh_h_day), 0);
-  const max = Math.max(1e-9, ...S.map(s => s.veh_h_day));    // > 0: the colour and width scales divide by it
-  $("rout").innerHTML = `${rankSummary(R, S, top, modeTxt)}
-    <div class="rkgrid">
-      <div class="mapcol"><div id="rkmap"></div></div>
-      <div><table class="tbl"><thead><tr><th>#</th><th>Tronçon et lignes</th><th style="text-align:right">h-véh. / jour</th><th style="text-align:right">par an</th><th style="text-align:right" title="secondes perdues par véhicule, par rapport à la soirée (20 h–minuit)">s / véhicule</th></tr></thead>
-      <tbody>${rankRows(R, S, max)}</tbody></table></div>
+  return KMH[KMH.length - 1][1];
+}
+function drawRank(R, MP) {
+  const q = R.query, S_ = R.stretches || [];
+  const modeTxt = q.lines ? (q.lines.length > 1 ? `les lignes ${q.lines.map(esc).join(", ")}` : `la ligne ${esc(q.lines[0])}`) : {all: "toutes les lignes", tram: "les trams", bus: "les bus", metro: "le métro"}[q.mode];
+  const top = S_.reduce((a, s) => a + Math.max(0, s.veh_h_day), 0);
+  const max = Math.max(1e-9, ...S_.map(s => s.veh_h_day));
+  const metro = (q.mode === "metro" || (q.lines && q.lines.every(l => (lineOf(l) || {}).mode === "metro"))) && R.lines_used;
+  const none = `<div class="notice">Aucun tronçon en perte de temps pour ${modeTxt} sur cette période.${metro ? " La STIB ne situe les rames de métro qu'aux stations : on ne peut pas mesurer leur vitesse entre deux stations." : ""}</div>`;
+  $("rout").innerHTML = `<div class="rkgrid">
+      <div class="mapcol"><div id="rkmap"></div><div class="maplg" id="rklg"></div></div>
+      <div class="rklist"><h2 class="fh">Les tronçons les plus coûteux</h2>${S_.length ? `${rankSummary(R, S_, top, modeTxt)}
+      <table class="tbl"><thead><tr><th>#</th><th>Tronçon et lignes</th><th style="text-align:right">h-véh. / jour</th><th style="text-align:right">par an</th><th style="text-align:right" title="secondes perdues par véhicule, par rapport à la soirée (20 h–minuit)">s / véhicule</th></tr></thead>
+      <tbody>${rankRows(R, S_, max)}</tbody></table>` : none}</div>
     </div>
     ${rankExcluded(R.excluded || {n: 0, top: []})}
-    <p class="method">Comment c'est calculé : chaque véhicule STIB envoie sa position toutes les 20 secondes, et sur chaque segment de 30 m, une position compte pour environ 20 s passées là. Le temps moyen d'un véhicule sur le tronçon est comparé à celui de la soirée (20 h–minuit, mêmes jours), puis multiplié par le nombre de passages entre 6 h et 21 h. Les zones d'arrêt (de l'approche de l'arrêt jusqu'au départ) et les jours où le flux est incomplet ne comptent pas, pas plus que les jours exclus dans les options (jours fériés et grèves par défaut). Le chiffre par an multiplie par ${R.days_per_year} jours : c'est un ordre de grandeur.</p>`;
-  drawRankMap(S, max);
+    <p class="method">Le temps moyen d'un véhicule sur chaque tronçon est comparé à celui de la soirée (20 h–minuit, mêmes jours), puis multiplié par le nombre de passages ${hrange(q)}. Les zones d'arrêt et les heures où le flux est incomplet ne comptent pas, pas plus que les jours exclus dans les options. Le chiffre par an multiplie par ${R.days_per_year} jours : c'est un ordre de grandeur.</p>`;
+  drawRankMap(S_, MP);
   bindRankRows();
 }
 // a stretch's tooltip on the map: rank and stops, line badges, time lost per day and per vehicle
@@ -139,31 +286,64 @@ function rankTip(s) {
   return `<b>${s.rank}. ${esc(s.from)} → ${esc(s.to)}</b><span class="lines">${s.lines.map(lb).join("")}</span>`
     + `${nf(s.veh_h_day, 1)} h-véh. perdues par jour · ${nf(s.s_per_passage, 0)} s par véhicule`;
 }
-// the stretches on the map, coloured and sized by their cost; the 15 first numbered
-function drawRankMap(S, max) {
+function linkTip(l) {
+  const lb = x => badge(lineOf(x) || {line: x});
+  const sp = l.metro ? `<span>Pas de vitesse : rames situées aux stations seulement</span>`
+    : `<b class="tv">${nf(l.vr, 1)} km/h</b> entre arrêts · <b class="tv">${nf(l.v, 1)} km/h</b> avec arrêts`;
+  return `<b>${esc(l.f)} → ${esc(l.t)}</b><span class="lines">${l.l.slice(0, 10).map(lb).join("")}</span>${sp}<br>${nf(l.pd, 0)} passages par jour · ${nf(l.len)} m${l.term ? " · terminus (attente comprise)" : ""}${l.reg ? "<br>Arrêt de régulation : les véhicules y attendent, hors des vitesses" : ""}`;
+}
+// to the right of the direction of travel, so both directions show when zoomed in
+function offsetPath(c, m = 9) {
+  const k = Math.cos(c[0][1] * Math.PI / 180), dy = m / 111320, dx = dy / k, out = [];
+  for (let i = 0; i < c.length; i++) {
+    const a = c[Math.max(0, i - 1)], b = c[Math.min(c.length - 1, i + 1)];
+    const ex = (b[0] - a[0]) * k, ey = b[1] - a[1], n = Math.hypot(ex, ey) || 1;
+    out.push([c[i][1] - ex / n * dy, c[i][0] + ey / n * dx]);
+  }
+  return out;
+}
+let RMAP = null, RLAYERS = [], BASE = [];
+function paintBase() {
+  for (const {l, pl} of BASE) {
+    const val = l[v.metric];
+    pl.setStyle({color: l.metro ? METROC : l.term ? NULLC : kmhColor(val), weight: 3, opacity: l.term && !l.metro ? .7 : .95});
+  }
+  $("rklg") && ($("rklg").innerHTML = legendHtml());
+}
+function legendHtml() {
+  const stops = KMH.map(([k, c]) => `${c} ${100 * (k - 4.5) / 22.5}%`).join(",");
+  const ticks = [6, 12, 18, 24].map(k => `<i style="left:${100 * (k - 4.5) / 22.5}%">${k}</i>`).join("");
+  return `<div class="lgh"><b>${v.metric === "vr" ? "Vitesse entre arrêts" : "Vitesse avec arrêts"}</b> <span>km/h</span></div><div class="lgb" style="background:linear-gradient(90deg,${stops})"></div><div class="lgt">${ticks}</div>
+    <div class="lgk"><span><b class="rkicon lgn">1</b> tronçon du classement</span><span><i class="lgg"></i> terminus, régulation (attente)</span><span><i class="lgg lgm"></i> métro : pas de vitesse</span></div>`;
+}
+function drawRankMap(S_, MP) {
   if (RMAP) { RMAP.remove(); RMAP = null; }
-  RMAP = L.map("rkmap", {scrollWheelZoom: false});
+  RMAP = L.map("rkmap", {scrollWheelZoom: false, preferCanvas: true, zoomSnap: .25});
   L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
     {attribution: "Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors", maxZoom: 16}).addTo(RMAP);
+  const cv = L.canvas({tolerance: 6});
+  BASE = (MP.links || []).map(l => {
+    const pl = L.polyline(offsetPath(l.c), {renderer: cv, lineCap: "butt"}).bindTooltip(() => linkTip(l), {sticky: true, className: "rktip"}).addTo(RMAP);
+    return {l, pl};
+  });
+  paintBase();
   RLAYERS = [];
-  const all = [];
-  [...S].reverse().forEach(s => {
+  const top = L.svg();
+  [...S_].reverse().forEach(s => {
     const geos = [s.c, ...(s.cs || [])].filter(c => c && c.length >= 2);
     if (!geos.length) return;
     const lls = geos.map(c => c.map(([x, y]) => [y, x]));
     const tip = rankTip(s), pick = () => selectRow(s.rank - 1, false);
-    const pl = L.polyline(lls, {color: heat(s.veh_h_day / max), weight: 4 + 6 * s.veh_h_day / max, opacity: .95})
-      .bindTooltip(tip, {sticky: true, className: "rktip"}).addTo(RMAP).on("click", pick);
-    // a wider, invisible line under the pointer: a thin stretch is easy to hover
-    L.polyline(lls, {weight: 16, opacity: 0}).bindTooltip(tip, {sticky: true, className: "rktip"}).addTo(RMAP).on("click", pick);
-    RLAYERS[s.rank - 1] = pl; all.push(pl);
+    const pl = L.polyline(lls, {renderer: top, color: "#fff", weight: 2 + 3 * (s.veh_h_day / S_[0].veh_h_day), opacity: .9}).bindTooltip(tip, {sticky: true, className: "rktip"}).addTo(RMAP).on("click", pick);
+    RLAYERS[s.rank - 1] = pl;
     if (s.rank <= 15) {
       const ll = lls[0], mid = ll[Math.floor(ll.length / 2)];
-      L.marker(mid, {icon: L.divIcon({className: "rkicon", html: String(s.rank)})}).bindTooltip(tip, {className: "rktip", direction: "top", offset: [0, -10]})
-        .addTo(RMAP).on("click", pick);
+      L.marker(mid, {icon: L.divIcon({className: "rkicon", html: String(s.rank)})}).bindTooltip(tip, {className: "rktip", direction: "top", offset: [0, -10]}).addTo(RMAP).on("click", pick);
     }
   });
-  if (all.length) RMAP.fitBounds(L.featureGroup(all).getBounds(), {padding: [20, 20]});
+  const all = [...BASE.map(b => b.pl), ...RLAYERS.filter(Boolean)];
+  if (all.length) RMAP.fitBounds(L.featureGroup(all).getBounds(), {padding: [8, 8]});
+  else RMAP.setView([50.85, 4.35], 12);
 }
 function bindRankRows() {
   document.querySelectorAll("#rout tbody tr").forEach(tr => tr.addEventListener("click", e => {
@@ -179,6 +359,7 @@ function bindRankRows() {
 }
 function selectRow(i, zoom) {
   document.querySelectorAll("#rout tbody tr").forEach(tr => tr.classList.toggle("sel", +tr.dataset.i === i));
+  RLAYERS.forEach((x, j) => x && x.setStyle({color: j === i ? "#F3C300" : "#fff"}));
   const l = RLAYERS[i];
   if (l) { if (zoom) RMAP.fitBounds(l.getBounds(), {maxZoom: 16, padding: [60, 60]}); l.openTooltip(); }
   if (!zoom) { const tr = document.querySelector(`#rout tbody tr[data-i="${i}"]`); if (tr) tr.scrollIntoView({block: "nearest", behavior: "smooth"}); }

@@ -54,11 +54,11 @@ MS_BUCKET=data/ms .venv/bin/uvicorn stibms.api:app --port 8080     # or MS_BUCKE
 ```
 
 Three pages share `static/index.html` (its scripts and styles: `static/*.js`, `static/app.css`): `/` (one line), `/comparer` (two periods) and `/classement`
-(network ranking); the URL query string carries the state (`/methode` redirects to `/`). The analysis itself is the package's
+(the network: speed and km per month, map, ranking); the URL query string carries the state (`/methode` redirects to `/`). The analysis itself is the package's
 `html/template.html`, fed by `/api/analysis` or `/api/compare`. Endpoints are listed in
 `src/stibms/api/__init__.py`: `/api/health`, `/api/status`, `/api/lines`, `/api/coverage`, `/api/versions`,
 `/api/analysis[.csv|.parquet]`, `/api/hotspots[.csv|.parquet]`, `/api/tune`, `/api/compare`,
-`/api/ranking`. Results are cached in process and under `results/v{ALGO}/` in the bucket.
+`/api/ranking`, `/api/network`, `/api/network/map`. Results are cached in process and under `results/v{ALGO}/` in the bucket.
 
 The ranking (`src/stibms/ranking.py`) never runs the line analyses: the derive writes, per month, a
 small link cube for all lines (`derived/v1/linkcube/month=M/`, see `src/stibms/linkcube.py`:
@@ -72,6 +72,10 @@ reason) and merges platforms of the same stops into one stretch.
 .venv/bin/python -m stibms.ranking --from 2026-07-01 --to 2026-09-30 --mode tram
 .venv/bin/python -m stibms.derive --from 2024-04 --to 2026-09 --linkcube-only   # rebuild the cubes
 ```
+
+The network indicators (`src/stibms/network.py`) read three more monthly tables of the same derive: `linehours`
+(km and speed totals per line and hour), `plan` (km of the GTFS timetable per line and hour) and `hourly` (per link,
+for the map and for a ranking on other hours than 6-21 h). The rebuild above writes them.
 
 ## Image
 

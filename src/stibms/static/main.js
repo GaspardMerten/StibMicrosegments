@@ -3,7 +3,7 @@ import {$, S, done, dowSet, esc, fmonth, getJSON} from "./util.js?rev=__REV__";
 import {XL, XR} from "./excl.js?rev=__REV__";
 import {lineOf, presetState, presets, setLine} from "./lines.js?rev=__REV__";
 import {runLine} from "./lineview.js?rev=__REV__";
-import {runRank} from "./rank.js?rev=__REV__";
+import {runRank, setNetState} from "./rank.js?rev=__REV__";
 import {selTab} from "./sel.js?rev=__REV__";
 
 // ---------------------------------------------------------------- tabs + URL state
@@ -32,7 +32,7 @@ document.querySelectorAll("nav a").forEach(a => a.addEventListener("click", e =>
   history.pushState(null, "", a.getAttribute("href") + (t !== "rank" && line ? "?line=" + encodeURIComponent(line) : ""));
   setTab(t);
   window.scrollTo(0, 0);
-  if (t === "rank") { $("rfrom").value = ""; $("rto").value = ""; runRank(); } else if (line && lineOf(line) && lineOf(line).available) runLine();
+  if (t === "rank") { $("rfrom").value = ""; $("rto").value = ""; setNetState(new URLSearchParams()); runRank(); } else if (line && lineOf(line) && lineOf(line).available) runLine();
 }));
 window.addEventListener("popstate", () => boot(false));
 
@@ -49,8 +49,7 @@ function bootRank(u) {
   dowSet($("rdow"), u.get("dow"));
   if (XR.load(u)) $("rmore").open = true;
   XR.setRange(S.info.ingested.from, S.info.ingested.to);
-  const m = u.get("mode") || "all";
-  $("rmode").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.mode === m)));
+  setNetState(u);
   // a value the menu does not offer would empty it (and the API refuses top=)
   if ([...$("rtop").options].some(o => o.value === u.get("top"))) $("rtop").value = u.get("top");
   $("rterm").checked = u.get("terminus") === "true";

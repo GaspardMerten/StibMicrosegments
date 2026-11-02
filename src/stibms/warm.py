@@ -5,7 +5,8 @@
 Per line with derived data (``/api/lines``, latest GTFS), on its default period (``available.default``,
 what ``static/lines.js`` puts in the form) with the API's default parameters: ``/api/coverage``,
 ``/api/versions`` and ``/api/analysis`` (the frame of the line page; both directions in one result);
-then the ranking page's default (``/api/ranking?dow=0-4&mode=all&top=50``, default window).
+then the network page's defaults (``/api/network``, ``/api/network/map`` and ``/api/ranking?dow=0-4&mode=all&top=50``
+on the last complete month).
 
 The results go through the API's own path (``api.cache.load``: same keys, same compute, same bucket
 objects), so the service then serves them from the bucket. Computes take the HEAVY guard (``MS_HEAVY``,
@@ -70,10 +71,29 @@ def ranking_result():
     return rank_result(*call(rank_query))
 
 
+def network_result():
+    from .api.network import net_query, net_result
+    from .api.params import call
+    return net_result(call(net_query))
+
+
+def network_map_result():
+    """The map of the last complete month, what the page shows first."""
+    from fastapi import HTTPException
+    from .api.context import state
+    from .api.network import map_query, map_result
+    from .api.params import call
+    from .ranking import default_window
+    w = default_window(state.data)
+    if w is None:
+        raise HTTPException(404, "no complete derived month")
+    return map_result(call(map_query, from_=w[0].isoformat(), to=w[1].isoformat()))
+
+
 def run(lines: set[str] | None = None, workers: int = 2, analysis: bool = True) -> dict[str, int]:
     """Warm every default result; counts per outcome."""
     from .api.context import state
-    jobs = [("ranking default", ranking_result)]
+    jobs = [("ranking default", ranking_result), ("network default", network_result), ("network map default", network_map_result)]
     jobs += [j for ln, d in default_lines(state.data, lines) for j in line_results(ln, d, analysis)]
     log.info("warming %d results with %d workers", len(jobs), workers)
     counts: dict[str, int] = {}

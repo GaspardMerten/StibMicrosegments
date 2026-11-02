@@ -677,9 +677,11 @@ def test_warm_skips_a_refused_request(client, monkeypatch):
         return f
     assert warm._warm("x", refuse(404)) == "missing" and warm._warm("x", refuse(422)) == "failed"
     monkeypatch.setattr(warm, "ranking_result", refuse(422))
+    monkeypatch.setattr(warm, "network_result", refuse(404))
+    monkeypatch.setattr(warm, "network_map_result", refuse(404))
     monkeypatch.setattr(warm, "default_lines", lambda data, only: [("S1", {"from": "2025-05-26", "to": "2025-05-27"})])
     monkeypatch.setattr(warm, "line_results", lambda ln, d, a: [(f"coverage {ln}", refuse(404))])
-    assert warm.run() == {"failed": 1, "missing": 1}
+    assert warm.run() == {"failed": 1, "missing": 3}
 
 
 def test_ranking_lists_only_stretches_in_loss():
@@ -694,3 +696,128 @@ def test_ranking_lists_only_stretches_in_loss():
     rows, tot, n = _stretches(df, 10, {}, 261)
     assert [r["link_key"] for r in rows] == ["c>d"] and n == 1 and tot == 7200.0
     assert _stretches(df.filter(pl.col("veh_s_day") <= 0), 10, {}, 261) == ([], 0.0, 0)
+
+
+# ---------------------------------------------------------------------------------- network page
+NET = "from=2025-05-26&to=2025-06-02&dow=0-6&hours=4-28&holidays=include&reduced=include"
+
+
+def test_hourly_tables_sum_to_the_cube(derived_root):
+    c = pl.read_parquet(derived_root / derived("linkcube/month=2025-05/cube.parquet"))
+    h = pl.read_parquet(derived_root / derived("linkcube/month=2025-05/hourly.parquet"))
+    day = h.filter(pl.col("ok") & pl.col("hour").is_between(6, 20))
+    assert day["o_r"].sum() == pytest.approx(c["o_day_r"].sum(), rel=1e-4)
+    assert day["o_s"].sum() == pytest.approx(c["o_day_s"].sum(), rel=1e-4)
+    assert day["n"].sum() == pytest.approx(c["p_day"].sum(), rel=1e-4)
+    lh = pl.read_parquet(derived_root / derived("linkcube/month=2025-05/linehours.parquet"))
+    plan = pl.read_parquet(derived_root / derived("linkcube/month=2025-05/plan.parquet"))
+    assert {"feed_ok", "km", "d_s", "t_s", "d_r", "t_r"} <= set(lh.columns) and lh["km"].sum() > 0
+    assert {"line", "service_date", "hour", "km", "trips", "feed_ok"} <= set(plan.columns) and plan["km"].sum() > 0
+
+
+def test_network_indicators(client):
+    r = client.get("/api/network?" + NET)
+    assert r.status_code == 200, r.text
+    R = r.json()
+    assert [m["month"] for m in R["months"]] == ["2025-05", "2025-06"] and R["selection"] == "all"
+    t = R["total"]["all"]
+    assert 0 < t["v"] < t["vr"] < 70                 # stops only slow vehicles down
+    assert t["plan_all"] > 0 and 40 < t["pct_all"] < 130    # the simulator runs its own timetable
+    # all the hours and days asked for: the filtered km are the month's
+    assert t["plan"] == t["plan_all"] and t["real"] == t["real_all"]
+    assert R["total"]["metro"]["v"] is None
+    # fewer hours: fewer km, the whole month's unchanged
+    am = client.get("/api/network?" + NET.replace("hours=4-28", "hours=7-10")).json()["total"]["all"]
+    assert am["plan"] < t["plan"] and am["plan_all"] == t["plan_all"] and am["real"] < t["real"]
+    sel = client.get("/api/network?" + NET + "&lines=S1").json()
+    assert sel["selection"] == "sel" and sel["total"]["sel"]["real_all"] == t["real_all"]
+    assert client.get("/api/network?" + NET + "&lines=XX").json()["total"]["sel"]["real_all"] == 0
+    assert client.get("/api/network?" + NET.replace("4-28", "21-6")).status_code == 422
+    assert client.get("/api/network?" + NET + "&mode=boat").status_code == 422
+
+
+def test_network_map(client):
+    r = client.get("/api/network/map?" + NET)
+    assert r.status_code == 200, r.text
+    links = r.json()["links"]
+    assert links and all(len(x["c"]) >= 2 and x["l"] == ["S1"] for x in links)
+    fine = [x for x in links if x["v"] is not None and not x["term"]]
+    assert fine and all(0 < x["v"] <= 70 for x in fine)
+    assert client.get("/api/network/map?" + NET + "&lines=XX").json()["links"] == []
+    assert client.get("/api/network/map?from=2024-01-01&to=2025-06-02").status_code == 422   # > 400 days
+
+
+def test_ranking_other_hours_and_lines(client, derived_root):
+    import datetime as dt
+    from stibms import ranking as R
+    from stibms.data import Data
+    d = Data(str(derived_root))
+    a, b = dt.date(2025, 5, 26), dt.date(2025, 6, 2)
+    q = R.RankQuery(a, b, tuple(range(7)))
+    keep = pl.col("service_date").is_between(a, b)
+    # the hourly tables give the cube's sums for the cube's hours
+    hl = R._hourly_links(d, q, keep, None).sort("link_key")
+    cube = pl.concat([R.month_tables(d, m)[0] for m in ("2025-05", "2025-06")], how="diagonal_relaxed").filter(keep)
+    assert hl["o_day_r"].sum() == pytest.approx(cube["o_day_r"].sum(), rel=1e-3)
+    assert hl["p_eve"].sum() == pytest.approx(cube["p_eve"].sum(), rel=1e-3)
+    u = "/api/ranking?from=2025-05-26&to=2025-06-02&dow=0-6&top=10"
+    r = client.get(u + "&hours=7-10").json()
+    assert r["status"] == "done" and r["query"]["hours"] == [7, 10]
+    assert "hours" not in client.get(u).json()["query"]        # the usual ranking keeps its cache key
+    assert client.get(u + "&lines=XX").json()["stretches"] == []
+    assert client.get(u + "&lines=S1").json()["query"]["lines"] == ["S1"]
+    assert client.get(u + "&hours=10-7").status_code == 422
+
+
+def test_trip_hours_shares_km_by_time():
+    from stibms.schedule import shape_km, trip_hours
+    t = pl.DataFrame({"start_s": [7 * 3600 + 1800, 9 * 3600], "end_s": [8 * 3600 + 1800, 9 * 3600], "km": [10.0, 4.0]})
+    x = trip_hours(t).sort("start_s", "hour")
+    assert x["hour"].to_list() == [7, 8, 9] and x["km"].to_list() == pytest.approx([5.0, 5.0, 4.0])
+    assert x["trips"].to_list() == [1, 0, 1]
+    s = pl.DataFrame({"shape_id": ["a", "a"], "shape_pt_lat": [50.85, 50.86], "shape_pt_lon": [4.35, 4.35], "shape_pt_sequence": [1, 2]})
+    assert shape_km(s)["km"][0] == pytest.approx(1.112, abs=0.01)
+
+
+def test_regulation_links_left_out_of_speeds():
+    from stibms import linkcube as C
+    d = dt.date(2025, 3, 3)
+    base = dict(service_date=d, o_eve_r=10.0, o_eve_s=0.0, l_eve_r=0.0, l_eve_s=0.0, p_day=10.0, p_eve=10.0)
+    o = pl.DataFrame([
+        # holding between the stop zones: 100 s lost, 80 s of them in long stands
+        {**base, "link_key": "hold", "o_day_r": 20.0, "o_day_s": 0.0, "l_day_r": 8.0, "l_day_s": 0.0},
+        # traffic: the same loss, no long stand
+        {**base, "link_key": "jam", "o_day_r": 20.0, "o_day_s": 0.0, "l_day_r": 0.0, "l_day_s": 0.0},
+        # waiting in the stop zone only: regulation for the speed with stops, not for the one between them
+        {**base, "link_key": "stop", "o_day_r": 12.0, "o_day_s": 10.0, "l_day_r": 0.0, "l_day_s": 9.0},
+        # no evening service: cannot be tested, stays in
+        {**base, "link_key": "noeve", "o_day_r": 20.0, "o_day_s": 0.0, "l_day_r": 20.0, "l_day_s": 0.0, "o_eve_r": 0.0, "p_eve": 0.0},
+    ])
+    r = {x["link_key"]: (x["reg"], x["reg_r"]) for x in C._regulation(o).iter_rows(named=True)}
+    assert r == {"hold": (True, True), "jam": (False, False), "stop": (True, False)}
+    assert C._regulation(o, [d]).height == 0                  # days the ranking leaves out do not vote
+    assert C._regulation(o.with_columns(service_date=dt.date(2025, 3, 8))).height == 0   # nor Saturdays
+
+    h = pl.DataFrame({"service_date": [d] * 3, "hour": [8] * 3, "link_key": ["hold", "jam", "stop"], "n": [10.0] * 3,
+                      "spd_ok": [True] * 3, "o_r": [20.0, 20.0, 12.0], "o_s": [0.0, 0.0, 10.0]})
+    roles = pl.DataFrame({"link_key": ["hold", "jam", "stop"], "len_m": [500.0] * 3, "term": [0] * 3,
+                          "reg": [True, False, True], "reg_r": [True, False, False]})
+    marks = pl.DataFrame(schema={"line": pl.Utf8, "link_key": pl.Utf8, "mark_m": pl.Float64})
+    t = C._line_hours(h, roles, marks).row(0, named=True)
+    assert t["km"] == pytest.approx(15.0)                     # km count every link
+    assert t["d_s"] == pytest.approx(5000) and t["t_s"] == pytest.approx(400)          # jam only
+    assert t["t_r"] == pytest.approx((20 + 12) * 20)                                    # jam + stop
+
+
+def test_partial_position_feed_left_out_of_speeds():
+    import datetime as dt
+    from stibms.linkcube import _hourly
+    d = dt.date(2025, 2, 18)
+    k = dict(service_date=[d], link_key=["a"], w=[10.0], stop=[False], long=[False])
+    ok = pl.DataFrame({"service_date": [d, d], "hour": [8, 9]}, schema={"service_date": pl.Date, "hour": pl.Int8})
+    fx = pl.DataFrame({**k, "hour": [8]}, schema_overrides={"hour": pl.Int8})
+    fx = pl.concat([fx, fx.with_columns(pl.lit(9, pl.Int8).alias("hour"))])
+    ps = pl.DataFrame({"service_date": [d, d], "hour": [8, 9], "link_key": ["a", "a"], "n": [100.0, 100.0], "n_feed": [95.0, 15.0]},
+                      schema_overrides={"hour": pl.Int8})
+    h = _hourly(fx, ps, ok).sort("hour")
+    assert h["ok"].to_list() == [True, True] and h["spd_ok"].to_list() == [True, False]
