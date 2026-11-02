@@ -51,7 +51,7 @@ from .linkcube import rel as cube_rel
 from .queries import check_days, check_dow, check_holidays, check_span, days_canonical, digest
 from .stopzones import APPROACH_M, default_head, heads
 
-NET_VERSION = 4
+NET_VERSION = 5
 NOFEED_SHARE = 0.5          # under this share of the planned km in hours with feed: a day without data
 STRIKE_RATIO = 0.75         # under this share of the planned km run, feed up: a strike day
 MODES = ("all", "bus", "tram", "metro")
@@ -240,7 +240,14 @@ def _month_tables(data: Data, q: NetQuery, month: str):
     lh, plan = _table(data, month, "linehours"), _table(data, month, "plan")
     if lh is None or plan is None:
         return None, None
-    span = pl.col("service_date").is_between(q.first, q.last)
+    # passages after midnight belong to the previous service day (hours 24-27): the first night of a month
+    # sits in that month's table under the last day of the previous month, so it is read back from there
+    days = month_dates(month)
+    nxt = (days[-1] + dt.timedelta(days=1)).strftime("%Y-%m")
+    late = _table(data, nxt, "linehours") if nxt in data.derived_months() else None
+    if late is not None:
+        lh = pl.concat([lh, late.filter(pl.col("service_date") <= days[-1]).select(lh.columns)])
+    span = pl.col("service_date").is_between(max(q.first, days[0]), min(q.last, days[-1]))
     return lh.filter(span), plan.filter(span)
 
 

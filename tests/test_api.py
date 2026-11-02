@@ -864,3 +864,18 @@ def test_partial_position_feed_left_out_of_speeds():
                       schema_overrides={"hour": pl.Int8})
     h = _hourly(fx, ps, ok).sort("hour")
     assert h["ok"].to_list() == [True, True] and h["spd_ok"].to_list() == [True, False]
+
+
+def test_first_night_of_a_month_counts_in_the_previous_month(monkeypatch):
+    from stibms import network as N
+    jan, d31, j1 = "2026-01", dt.date(2025, 12, 31), dt.date(2026, 1, 1)
+    lh = {"2025-12": pl.DataFrame({"line": ["1"], "service_date": [d31], "hour": [23], "km": [5.0], "feed_ok": [True]}),
+          jan: pl.DataFrame({"line": ["1", "1"], "service_date": [d31, j1], "hour": [24, 8], "km": [2.0, 9.0], "feed_ok": [True, True]})}
+    plan = {m: pl.DataFrame({"line": ["1"], "service_date": [d31 if m == "2025-12" else j1], "hour": [8], "km": [1.0],
+                             "trips": [1], "feed_ok": [True]}) for m in lh}
+    monkeypatch.setattr(N, "_table", lambda data, m, name, columns=None: (lh if name == "linehours" else plan).get(m))
+    data = type("D", (), {"derived_months": lambda self: ["2025-12", jan]})()
+    q = N.NetQuery(first=dt.date(2025, 12, 1), last=dt.date(2026, 1, 31))
+    dec_lh, _ = N._month_tables(data, q, "2025-12")
+    jan_lh, _ = N._month_tables(data, q, jan)
+    assert sorted(dec_lh["hour"].to_list()) == [23, 24] and jan_lh["service_date"].to_list() == [j1]
