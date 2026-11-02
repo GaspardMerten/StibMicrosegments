@@ -24,6 +24,14 @@ compare with STIB's. The metro has km but no speed: the feed only places its tra
 between two stations reports nothing), so its speeds would read 27-48 km/h against STIB's 27.9.
 The network's speed is therefore bus + tram.
 
+Days left out (``left_out`` in the answer, per month and for the period):
+
+- no feed: the feed was down for most of the day's planned km (``NOFEED_SHARE``). Nothing is known about it,
+  so it never counts in the km, whatever the options (summer 2024: the source published nothing for weeks);
+- strike: the timetable announced a reduced service (``schedule``), or the feed was up and under
+  ``STRIKE_RATIO`` of the planned km ran (STIB does not always publish the strike timetable). Left out of the
+  speeds, the km and the map with ``reduced=exclude`` (the default), counted with ``reduced=include``.
+
 Planned km on a strike day may already be the reduced service: STIB publishes it in the GTFS (``stibms.schedule``).
 """
 from __future__ import annotations
@@ -43,7 +51,9 @@ from .linkcube import rel as cube_rel
 from .queries import check_days, check_dow, check_holidays, check_span, days_canonical, digest
 from .stopzones import APPROACH_M, default_head, heads
 
-NET_VERSION = 2
+NET_VERSION = 3
+NOFEED_SHARE = 0.5          # under this share of the planned km in hours with feed: a day without data
+STRIKE_RATIO = 0.75         # under this share of the planned km run, feed up: a strike day
 MODES = ("all", "bus", "tram", "metro")
 NO_SPEED = {"metro"}             # stations only in the feed: no speed (module docstring)
 DEFAULT_HOURS = (6, 21)
@@ -204,33 +214,72 @@ def _values(rows: list[dict], groups: dict, modes: dict) -> dict:
     return out
 
 
-def _month_rows(data: Data, q: NetQuery, month: str, excluded: set, modes: dict) -> dict | None:
-    """One month's rows per line, on the query's days and hours and on the whole month, and its days."""
+def _anomalies(lh: pl.DataFrame, plan: pl.DataFrame, reduced: set) -> dict[dt.date, tuple[str, int | None]]:
+    """date -> ("nofeed", None) | ("strike", % of the planned km run) for the network (module docstring). The plan
+    counts the lines of the month's tables only (a line never derived is not a strike)."""
+    if not plan.height:
+        return {}
+    lines = lh["line"].unique().implode() if lh.height else pl.Series([], dtype=pl.Utf8).implode()
+    p = plan.filter(pl.col("line").is_in(lines)).group_by("service_date").agg(
+        pl.col("km").sum().cast(pl.Float64).alias("p"), pl.col("km").filter("feed_ok").sum().cast(pl.Float64).alias("p_ok"))
+    r = lh.group_by("service_date").agg(pl.col("km").filter("feed_ok").sum().cast(pl.Float64).alias("r_ok"))
+    out = {}
+    for d, pp, pok, rok in p.join(r, on="service_date", how="left").fill_null(0.0).select("service_date", "p", "p_ok", "r_ok").iter_rows():
+        if pp <= 0:
+            continue
+        if pok < NOFEED_SHARE * pp:
+            out[d] = ("nofeed", None)
+        elif d in reduced or rok < STRIKE_RATIO * pok:
+            out[d] = ("strike", round(100 * rok / pok))
+    return out
+
+
+def _month_tables(data: Data, q: NetQuery, month: str):
     lh, plan = _table(data, month, "linehours"), _table(data, month, "plan")
-    if lh is None or plan is None or not (lh.height or plan.height):
-        return None
+    if lh is None or plan is None:
+        return None, None
     span = pl.col("service_date").is_between(q.first, q.last)
-    lh, plan = lh.filter(span), plan.filter(span)
-    if not (lh.height or plan.height):
+    return lh.filter(span), plan.filter(span)
+
+
+def _left_out(q: NetQuery, an: dict) -> tuple[set, set]:
+    """(days out of the query's selection, days out of the whole-month km) from a month's anomalies."""
+    nofeed = {d for d, (w, _) in an.items() if w == "nofeed"}
+    strikes = {d for d, (w, _) in an.items() if w == "strike"} if q.reduced == "exclude" else set()
+    return nofeed | strikes, nofeed | strikes
+
+
+def _reduced_days(data: Data, q: NetQuery) -> set:
+    return {d for d, c in schedule.categories(data, q.first, q.last).items() if c == "reduced_service"}
+
+
+def _month_rows(data: Data, q: NetQuery, month: str, excluded: set, modes: dict, reduced: set) -> dict | None:
+    """One month's rows per line, on the query's days and hours and on the whole month, and its days."""
+    lh, plan = _month_tables(data, q, month)
+    if lh is None or not (lh.height or plan.height):
         return None
+    an = _anomalies(lh, plan, reduced)
+    out_sel, out_all = _left_out(q, an)
+    excluded = set(excluded) | out_sel
     sel = _keep_days(q, excluded) & _in_hours(q)
-    a, b = _per_line_month(lh, plan, sel), _per_line_month(lh, plan, pl.lit(True))
+    a, b = _per_line_month(lh, plan, sel), _per_line_month(lh, plan, ~pl.col("service_date").is_in(sorted(out_all)))
     b = b.select("line", pl.col("real").alias("real_all"), pl.col("real_ok").alias("real_ok_all"),
                  pl.col("plan").alias("plan_all"), pl.col("plan_ok").alias("plan_ok_all"))
     rows = (b.join(a, on="line", how="left").fill_null(0.0)).to_dicts()
     days = set(lh["service_date"].unique().to_list()) | set(plan["service_date"].unique().to_list())
     kept = [d for d in days if d.weekday() in q.dow and d not in excluded]
-    return {"rows": rows, "days_all": len(days), "days": len(kept)}
+    left = [{"date": d.isoformat(), "why": w, "pct": p, "out": d in out_all} for d, (w, p) in sorted(an.items())]
+    return {"rows": rows, "days_all": len(days - out_all), "days": len(kept), "left_out": left}
 
 
 def compute(data: Data, q: NetQuery) -> dict:
     """Series per month and totals of the period, per group."""
     t0 = time.time()
     modes, excluded = modes_of(data), set(q.exclusions(data))
-    groups = _groups(q, modes)
+    groups, reduced = _groups(q, modes), _reduced_days(data, q)
     months = [m for m in months_between(q.first, q.last) if m in data.derived_months()]
     with ThreadPoolExecutor(max_workers=min(12, max(1, len(months)))) as ex:
-        got = list(ex.map(lambda m: _month_rows(data, q, m, excluded, modes), months))
+        got = list(ex.map(lambda m: _month_rows(data, q, m, excluded, modes, reduced), months))
     series, per_line = [], {}
     ingested = set(data.ingested_dates())
     for m, g in zip(months, got):
@@ -240,7 +289,7 @@ def compute(data: Data, q: NetQuery) -> dict:
         inside = [d for d in cal if q.first <= d <= q.last]
         series.append({"month": m, "days": g["days"], "days_all": g["days_all"], "days_in_month": len(cal),
                        "complete": len(inside) == len(cal) and all(d in ingested for d in cal),
-                       "groups": _values(g["rows"], groups, modes)})
+                       "groups": _values(g["rows"], groups, modes), "left_out": g["left_out"]})
         for r in g["rows"]:
             acc = per_line.setdefault(r["line"], dict.fromkeys(r, 0.0))
             for k, v in r.items():
@@ -306,6 +355,11 @@ def compute_map(data: Data, q: MapQuery) -> dict:
     modes, excluded = modes_of(data), set(q.exclusions(data))
     keep = _keep_lines(q, modes)
     months = [m for m in months_between(q.first, q.last) if m in data.derived_months()]
+    reduced = _reduced_days(data, q)
+    for m in months:      # strike days and days without feed, as on the evolution
+        lh, plan = _month_tables(data, q, m)
+        if lh is not None:
+            excluded |= _left_out(q, _anomalies(lh, plan, reduced))[0]
     with ThreadPoolExecutor(max_workers=min(4, max(1, len(months)))) as ex:   # hourly tables: a few at a time
         got = [x for x in ex.map(lambda m: _month_links(data, q, m, excluded, keep), months) if x is not None and x.height]
     empty = {"query": q.canonical(), "links": [], "status": "done", "n_days": 0, "seconds": round(time.time() - t0, 2)}

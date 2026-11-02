@@ -317,6 +317,11 @@ details.more .opts { display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:10p
 .lgn { display:inline-block; position:static; margin:0 3px 0 0 !important; vertical-align:middle; }
 .lgg { display:inline-block; width:16px; height:3px; background:#3a4560; vertical-align:middle; margin-right:3px; }
 .lgm { background:#8f9ab2; }
+.leftout { margin:14px 0 4px; font-size:13px; color:var(--muted, #9aa3b8); max-width:980px; }
+.leftout p { margin:6px 0; line-height:1.55; }
+.leftout b { color:var(--ink, #e8ecf4); font-weight:600; }
+.leftout .mini { margin-left:6px; }
+.leftout small { font-size:inherit; }
 .cards.one { grid-template-columns:minmax(0, 1fr); }
 .tv { display:inline !important; color:var(--ink); font-weight:600; }
 footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px solid var(--line); margin-top:20px; }

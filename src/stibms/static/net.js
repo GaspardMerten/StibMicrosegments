@@ -1,5 +1,6 @@
 // ---------------------------------------------------------------- network indicators: tiles, evolution, table
-import {$, esc, fmonth, nf} from "./util.js?rev=__REV__";
+import {$, esc, fday, fmonth, nf} from "./util.js?rev=__REV__";
+import {XR} from "./excl.js?rev=__REV__";
 import {lineChart, monthAxis} from "./charts.js?rev=__REV__";
 
 // fixed per entity (never per rank); checked with the dataviz palette validator on the dark surface
@@ -62,6 +63,10 @@ function kmSeries(R) {
     {name: "Réalisé", color: key === "all" ? COL.sel : COL[key], values: Object.fromEntries(R.months.map(m => [m.month, perDay(m, "real")]))}];
 }
 const legend = series => `<div class="lg">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join("")}</div>`;
+function allTxt(R) {
+  const strikes = R.months.some(m => (m.left_out || []).some(x => x.why === "strike" && x.out));
+  return "tous les jours et toutes les heures" + (strikes ? ", hors grèves" : "");
+}
 function hoursTxt(q) { const [a, b] = q.hours; return `${a} h–${b} h`; }
 function daysTxt(q) {
   const d = (q.dow || []).join();
@@ -73,7 +78,7 @@ function chartsHtml(R) {
     <figure class="card"><figcaption><b>Vitesse entre arrêts</b><small>km/h, ${esc(hoursTxt(q))}, ${esc(daysTxt(q))}</small></figcaption><div id="cr"></div>${legend(sr)}</figure>
     <figure class="card"><figcaption><b>Vitesse avec arrêts</b><small>km/h, ${esc(hoursTxt(q))}, ${esc(daysTxt(q))}</small></figcaption><div id="cc"></div>${legend(sc)}</figure>`;
   return `<div class="cards${speed ? "" : " one"}">${speed}
-    <figure class="card"><figcaption><b>Production kilométrique</b><small>km par jour (${st.scope === "all" ? "tous les jours et toutes les heures" : esc(daysTxt(q) + ", " + hoursTxt(q))})</small></figcaption><div id="ck"></div>${legend(km)}</figure>
+    <figure class="card"><figcaption><b>Production kilométrique</b><small>km par jour (${st.scope === "all" ? allTxt(R) : esc(daysTxt(q) + ", " + hoursTxt(q))})</small></figcaption><div id="ck"></div>${legend(km)}</figure>
   </div>`;
 }
 function drawCharts(R) {
@@ -85,6 +90,21 @@ function drawCharts(R) {
   lineChart($("ck"), {...common, series: kmSeries(R), digits: 0, zero: true, label: "Kilomètres par jour planifiés et réalisés, par mois"});
 }
 // ---------------------------------------------------------------- table: months x groups
+// ---------------------------------------------------------------- days left out: strikes (option) and days without feed
+function leftOutHtml(R) {
+  const all = R.months.flatMap(m => m.left_out || []);
+  const strikes = all.filter(x => x.why === "strike"), nofeed = all.filter(x => x.why === "nofeed");
+  if (!strikes.length && !nofeed.length) return "";
+  const out = strikes.length && strikes[0].out;
+  const st_ = strikes.length ? `<p><b>${strikes.length} jour${strikes.length > 1 ? "s" : ""} de grève ou de service très réduit</b>, ${out ? "écartés des vitesses, des km et de la carte" : "comptés dans les vitesses, les km et la carte"} :
+    ${strikes.map(x => `${fday(x.date, true)} <small>(${nf(x.pct)} % du planifié roulé)</small>`).join(", ")}.
+    <button type="button" class="mini" id="rstrike">${out ? "Les inclure" : "Les écarter"}</button></p>` : "";
+  const per = {};
+  for (const x of nofeed) per[x.date.slice(0, 7)] = (per[x.date.slice(0, 7)] || 0) + 1;
+  const nf_ = nofeed.length ? `<p><b>${nofeed.length} jour${nofeed.length > 1 ? "s" : ""} sans données</b> : le flux de la STIB était coupé, on ne sait pas ce qui a roulé. Ces jours ne comptent ni dans les km planifiés ni dans les réalisés.
+    ${Object.entries(per).map(([m, n]) => `${fmonth(m)} : ${n} j`).join(", ")}.</p>` : "";
+  return `<div class="leftout">${st_}${nf_}</div>`;
+}
 function tableHtml(R) {
   const keys = groupsShown(R), noSp = k => k === "metro", s = st.scope;
   const head1 = keys.map(k => `<th colspan="${noSp(k) ? 3 : 5}" class="gh"><i style="background:${COL[k]}"></i>${esc(k === "all" ? "Réseau" : NAME[k])}</th>`).join("");
@@ -94,11 +114,11 @@ function tableHtml(R) {
     return `${noSp(k) ? "" : `<td class="s0">${nf(g && g.vr, 1)}</td><td>${nf(g && g.v, 1)}</td>`}<td class="k0">${thousand(km && km.plan)}</td><td>${thousand(km && km.real)}</td><td>${nf(km && km.pct, 1)}</td>`;
   };
   const rows = [...R.months].reverse().map(m => {
-    const part = m.days_all < m.days_in_month ? `<small title="${m.days_all} jours collectés sur ${m.days_in_month}"> ${m.days_all} j</small>` : "";
+    const part = m.days_all < m.days_in_month ? `<small title="${m.days_all} jours comptés sur ${m.days_in_month}"> ${m.days_all} j</small>` : "";
     return `<tr data-m="${m.month}" class="${st.focus === m.month ? "on" : ""}"><th scope="row">${esc(fmonth(m.month))}${part}</th>${keys.map(k => cells(m.groups[k], k)).join("")}</tr>`;
   }).join("");
   const tot = `<tr class="tot"><th scope="row">Toute la période</th>${keys.map(k => cells(R.total[k], k)).join("")}</tr>`;
-  return `<div class="tblhead"><h2>Synthèse par mois</h2><span>Vitesses en km/h (${esc(hoursTxt(R.query))}, ${esc(daysTxt(R.query))}, bus + tram pour le réseau). Km en milliers (${s === "all" ? "tous les jours et toutes les heures" : "jours et heures choisis"}).</span><button type="button" class="mini" id="rcsv">Télécharger le CSV</button></div>
+  return `<div class="tblhead"><h2>Synthèse par mois</h2><span>Vitesses en km/h (${esc(hoursTxt(R.query))}, ${esc(daysTxt(R.query))}, bus + tram pour le réseau). Km en milliers (${s === "all" ? allTxt(R) : "jours et heures choisis"}).</span><button type="button" class="mini" id="rcsv">Télécharger le CSV</button></div>
     <div class="tscroll"><table class="mt"><thead><tr><th rowspan="2" class="mh">Mois</th>${head1}</tr><tr>${head2}</tr></thead><tbody>${rows}${tot}</tbody></table></div>`;
 }
 function csv(R) {
@@ -125,8 +145,9 @@ function methodHtml(R) {
 function draw() {
   const R = st.R;
   if (!R) return;
-  $("rnet").innerHTML = tilesHtml(R) + chartsHtml(R) + tableHtml(R) + methodHtml(R);
+  $("rnet").innerHTML = tilesHtml(R) + chartsHtml(R) + leftOutHtml(R) + tableHtml(R) + methodHtml(R);
   drawCharts(R);
+  $("rstrike")?.addEventListener("click", () => { XR.set("reduced", !XR.on("reduced")); $("rgo").click(); });
   $("rkmscope").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { st.scope = b.dataset.s; draw(); } });
   $("rcsv").addEventListener("click", () => csv(R));
   $("rnet").querySelectorAll("tbody tr[data-m]").forEach(tr => tr.addEventListener("click", () => st.onFocus && st.onFocus(tr.dataset.m)));

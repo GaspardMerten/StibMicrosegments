@@ -48,6 +48,7 @@ function makeExcl(el, sumEl) {
     add(a, b) { if (b < a) [a, b] = [b, a]; P = normPeriods([...P, [a, b]]); box("periods").checked = true; draw(); },
     covers: (a, b) => usedP().some(([x, y]) => x <= a && b <= y),
     on: k => box(k).checked,
+    set(k, v) { box(k).checked = v; draw(); },
     setRange(min, max) { for (const i of [ia, ib]) { i.min = min || ""; i.max = max || ""; } },
     // what is left out, in words ("hors fériés et grèves"): under the form and in the quality block
     text() {

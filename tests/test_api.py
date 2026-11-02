@@ -779,6 +779,21 @@ def test_trip_hours_shares_km_by_time():
     assert shape_km(s)["km"][0] == pytest.approx(1.112, abs=0.01)
 
 
+def test_strike_and_no_feed_days():
+    from stibms import network as N
+    d1, d2, d3, d4 = (dt.date(2025, 3, x) for x in (3, 4, 5, 6))
+    plan = pl.DataFrame({"line": ["55"] * 4 + ["99"] * 4, "service_date": [d1, d2, d3, d4] * 2, "hour": [8] * 8,
+                         "km": [100.0] * 4 + [1000.0] * 4, "feed_ok": [True, True, False, True] * 2})
+    # 99 never derived: its plan does not count; d2 runs 40 %, d3 has no feed, d4 is a timetable strike
+    lh = pl.DataFrame({"line": ["55"] * 4, "service_date": [d1, d2, d3, d4], "hour": [8] * 4,
+                       "km": [98.0, 40.0, 0.0, 97.0], "feed_ok": [True, True, False, True]})
+    an = N._anomalies(lh, plan, {d4})
+    assert an == {d2: ("strike", 40), d3: ("nofeed", None), d4: ("strike", 97)}
+    q = N.NetQuery(first=d1, last=d4)
+    assert N._left_out(q, an)[1] == {d2, d3, d4}
+    assert N._left_out(N.NetQuery(first=d1, last=d4, reduced="include"), an)[1] == {d3}   # no feed: never counted
+
+
 def test_regulation_links_left_out_of_speeds():
     from stibms import linkcube as C
     d = dt.date(2025, 3, 3)
