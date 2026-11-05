@@ -362,3 +362,5 @@ footer { color:var(--ink-3); font-size:12px; padding:20px 0 30px; border-top:1px
 .regt tr { cursor:default; }
 .regt thead th { position:static; }
 .fsub { margin:-4px 0 10px; color:var(--ink-3); font-size:13px; }
+.presets.pp { margin-top:6px; }
+.presets.pp button { padding:2px 8px; font-size:12px; }

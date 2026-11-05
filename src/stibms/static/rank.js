@@ -17,8 +17,42 @@ const v = {lines: new Set(), focusAsked: null, metric: "v", R: null, RK: null, M
 $("rmode").innerHTML = RMODES.map(([k, t]) => `<button type="button" data-mode="${k}" aria-pressed="${k === "all"}">${t}</button>`).join("");
 const fillHours = (el, a, b, d) => { el.innerHTML = Array.from({length: b - a + 1}, (_, i) => a + i).map(h => `<option value="${h}"${h === d ? " selected" : ""}>${hourLab(h)}</option>`).join(""); };
 fillHours($("rh0"), 4, 27, DEF_HOURS[0]); fillHours($("rh1"), 5, 28, DEF_HOURS[1]);
-$("rpresets").innerHTML = `<span class="lbl">Heures</span>` + HPRESETS.map(([t, a, b]) => `<button type="button" data-h0="${a}" data-h1="${b}">${t}</button>`).join("")
-  + `<span class="lbl gap">Période</span><button type="button" data-p="12">12 derniers mois</button><button type="button" data-p="all">Tout</button>`;
+$("rpresets").innerHTML = `<span class="lbl">Heures</span>` + HPRESETS.map(([t, a, b]) => `<button type="button" data-h0="${a}" data-h1="${b}">${t}</button>`).join("");
+// ---------------------------------------------------------------- period shortcuts, under the dates
+// "12 derniers mois" (the server's default window: dates left empty), each calendar year of the data, all of it
+const dataSpan = () => S.info ? [S.info.ingested.from, S.info.ingested.to] : null;
+function periodDates(k) {
+  const sp = dataSpan();
+  if (!sp) return null;
+  if (k === "all") return sp;
+  if (k === "12") return v.defWin;
+  const a = `${k}-01-01`, b = `${k}-12-31`;
+  return [a < sp[0] ? sp[0] : a, b > sp[1] ? sp[1] : b];
+}
+function drawPeriods() {
+  const sp = dataSpan();
+  if (!sp) return;
+  const years = [];
+  for (let y = +sp[1].slice(0, 4); y >= +sp[0].slice(0, 4); y--) years.push(String(y));
+  $("rppresets").innerHTML = [["12", "12 derniers mois"], ...years.map(y => [y, y]), ["all", "Tout"]]
+    .map(([k, t]) => `<button type="button" data-p="${k}">${t}</button>`).join("");
+  periodState();
+}
+function periodState() {
+  $("rppresets").querySelectorAll("[data-p]").forEach(b => {
+    const d = periodDates(b.dataset.p);
+    b.setAttribute("aria-pressed", String(!!d && d[0] === $("rfrom").value && d[1] === $("rto").value));
+  });
+}
+$("rppresets").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.p === "12") { $("rfrom").value = ""; $("rto").value = ""; }
+  else { const d = periodDates(b.dataset.p); if (!d) return; $("rfrom").value = d[0]; $("rto").value = d[1]; }
+  v.focusAsked = null;
+  periodState();
+  runRank();
+});
+for (const id of ["rfrom", "rto"]) $(id).addEventListener("input", periodState);
 function hourState() {
   $("rpresets").querySelectorAll("[data-h0]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.h0 === $("rh0").value && b.dataset.h1 === $("rh1").value)));
 }
@@ -33,10 +67,8 @@ $("rh0").addEventListener("change", () => rangeHours("rh0"));
 $("rh1").addEventListener("change", () => rangeHours("rh1"));
 $("rpresets").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
-  if (b.dataset.h0) { $("rh0").value = b.dataset.h0; $("rh1").value = b.dataset.h1; hourState(); }
-  if (b.dataset.p === "12") { $("rfrom").value = ""; $("rto").value = ""; }
-  if (b.dataset.p === "all") { $("rfrom").value = S.info.ingested.from; $("rto").value = S.info.ingested.to; }
-  v.focusAsked = null;
+  if (!b.dataset.h0) return;
+  $("rh0").value = b.dataset.h0; $("rh1").value = b.dataset.h1; hourState();
   runRank();
 });
 // ---------------------------------------------------------------- compare with a reference period
@@ -172,8 +204,10 @@ export async function runRank() {
     const [R, R2] = await Promise.all([getJSON("/api/network?" + apiParams(false)), cmp ? getJSON("/api/network?" + apiParams(true)) : null]);
     if (me !== NK) return;
     v.R = R; v.R2 = R2 && R2.months.length ? R2 : null;
+    if (!$("rfrom").value && !$("rto").value) v.defWin = [R.query.first, R.query.last];   // the default window
     if (!$("rfrom").value) $("rfrom").value = R.query.first;
     if (!$("rto").value) $("rto").value = R.query.last;
+    drawPeriods();
     ran("rf", rankParams());
     if (!R.months.length) {
       $("rnet").innerHTML = `<div class="notice">Aucune donnée calculée sur cette période.</div>`;
