@@ -879,3 +879,50 @@ def test_first_night_of_a_month_counts_in_the_previous_month(monkeypatch):
     dec_lh, _ = N._month_tables(data, q, "2025-12")
     jan_lh, _ = N._month_tables(data, q, jan)
     assert sorted(dec_lh["hour"].to_list()) == [23, 24] and jan_lh["service_date"].to_list() == [j1]
+
+
+def _pu(rows):
+    """Punctuality rows: (trip, stop, sequence, timetable time 'HH:MM', delay s)."""
+    base = dt.datetime(2025, 3, 3, tzinfo=dt.timezone.utc)   # 01:00 / 02:00 Brussels time, any hour works
+    out = []
+    for trip, stop, seq, hm, delay in rows:
+        h, m = map(int, hm.split(":"))
+        sched = base + dt.timedelta(hours=h, minutes=m)
+        out.append({"trip_id": trip, "start_date": "20250303", "route_id": "55", "direction_id": 0, "trip_schedule_relationship": 0,
+                    "stop_sequence": seq, "stop_id": stop, "arrival_time": sched + dt.timedelta(seconds=delay),
+                    "departure_time": sched + dt.timedelta(seconds=delay), "arrival_delay": delay, "departure_delay": delay, "observed": True})
+    return pl.DataFrame(out)
+
+
+def test_headways_and_excess_wait():
+    from stibms import regularity as R
+    # four trams every 10 min at stop A (then B, their last stop); the 2nd runs 8 min late: right behind the 3rd
+    rows = [(f"t{i}", s, k, f"06:{10 * i + 2 * k:02d}", 480 if i == 1 else 0) for i in range(4) for k, s in enumerate(("A", "B"))]
+    st = R.stop_times(_pu(rows))
+    assert set(st["stop_id"]) == {"A"}                 # B is every trip's last stop: nobody boards there
+    t = R.headways(st).select(R.sums()).row(0, named=True)
+    assert (t["m"], t["s1"], t["s2"]) == (3, 1800, 3 * 600 ** 2)            # timetable: 10, 10, 10 min
+    assert (t["n"], t["r1"], t["r2"]) == (3, 1800, 1080 ** 2 + 120 ** 2 + 600 ** 2)   # real: 18, 2, 10 min
+    w = R.waits(t)
+    assert w["ws"] == 5.0 and w["wr"] == round((1080 ** 2 + 120 ** 2 + 600 ** 2) / 3600 / 60, 2) and w["ew"] == 2.13
+    assert (t["bunch"], t["gap"], t["nc"]) == (1, 1, 3)
+
+
+def test_headways_break_and_partial_stops():
+    from stibms import regularity as R
+    # two trips, then none for 2 h: the gap is a break in the service, no headway across it
+    rows = [(f"t{i}", s, k, f"{hm}{k}", 0) for i, hm in enumerate(("06:0", "06:1", "08:3", "08:4")) for k, s in enumerate(("A", "Z"))]
+    t = R.headways(R.stop_times(_pu(rows))).select(R.sums()).row(0, named=True)
+    assert t["m"] == 2 and t["s1"] == 1200
+    # a stop that saw one trip in two against the line's other stops is left out that day
+    rows = [(f"t{i}", s, k, f"06:{10 * i + k:02d}", 0) for i in range(6) for k, s in enumerate(("A", "B", "C", "Z")) if not (s == "B" and i % 2)]
+    assert set(R.covered(R.stop_times(_pu(rows)))["stop_id"]) == {"A", "C"}
+
+
+def test_route_order_follows_links():
+    from stibms.network import _route_order
+    # by time after the trip's start, a short trip from Tilleul puts it before Paix; the links say Paix -> Tilleul
+    stops = ["Fonson", "Tilleul", "Paix", "Helmet"]
+    edges = {("Fonson", "Paix"), ("Paix", "Tilleul"), ("Tilleul", "Helmet")}
+    assert [stops[i] for i in _route_order(stops, edges)] == ["Fonson", "Paix", "Tilleul", "Helmet"]
+    assert [stops[i] for i in _route_order(stops, edges | {("Helmet", "Fonson")})][:1] == ["Fonson"]   # a loop still ends

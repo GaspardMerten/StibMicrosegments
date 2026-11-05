@@ -116,7 +116,7 @@ export function setNetState(u) {
   $("rh0").value = a >= 4 && a <= 27 ? a : DEF_HOURS[0]; $("rh1").value = b >= 5 && b <= 28 ? b : DEF_HOURS[1];
   rangeHours("rh1");
   v.focusAsked = u.get("focus");
-  v.metric = u.get("metric") === "vr" ? "vr" : "v";
+  v.metric = ["vr", "ew", "dew"].includes(u.get("metric")) ? u.get("metric") : "v";
   $("rcmp").checked = !!(u.get("cfrom") && u.get("cto")); $("rcfrom").value = u.get("cfrom") || ""; $("rcto").value = u.get("cto") || "";
   cmpState();
   $("rmetric").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.m === v.metric)));
@@ -264,7 +264,7 @@ async function runCompare() {
 }
 $("rf").addEventListener("submit", e => { e.preventDefault(); runRank(); });
 watch("rf", rankParams, "rall");
-$("rlede").textContent = "Vitesses et kilomètres de la STIB, mois par mois, pour tout le réseau, un mode ou les lignes de votre choix. La carte situe les ralentissements, le classement liste les tronçons où l'on perd le plus de temps.";
+$("rlede").textContent = "Vitesses, kilomètres et régularité de la STIB, mois par mois, pour tout le réseau, un mode ou les lignes de votre choix. La carte situe les ralentissements et les pertes de régularité, le classement liste les tronçons où l'on perd le plus de temps.";
 
 // ---------------------------------------------------------------- ranking
 const RREASON = {terminus: "terminus", short_terminus: "terminus partiel", holding: "attente pour l'horaire"};
@@ -318,6 +318,35 @@ function kmhColor(k) {
   }
   return KMH[KMH.length - 1][1];
 }
+// regularity on the map: the excess wait at a link's arrival stop (seconds), and how much it grows along the link
+const REGM = new Set(["ew", "dew"]);
+const EWS = [[0, "#1f8f45"], [15, "#b8e27f"], [30, "#f0a13a"], [60, "#e5484d"], [120, "#7a1020"]];
+function scaleColor(stops, x) {
+  if (x == null) return NULLC;
+  if (x <= stops[0][0]) return stops[0][1];
+  const hx = h => [1, 3, 5].map(j => parseInt(h.slice(j, j + 2), 16));
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (x <= stops[i + 1][0]) {
+      const u = (x - stops[i][0]) / (stops[i + 1][0] - stops[i][0]), A = hx(stops[i][1]), B = hx(stops[i + 1][1]);
+      return `rgb(${A.map((a, j) => Math.round(a + (B[j] - a) * u)).join(",")})`;
+    }
+  }
+  return stops[stops.length - 1][1];
+}
+const DEW = 10;    // seconds at the ends of the growth scale (along one link: a few seconds, 5-95 % within ±5 s)
+const CMPW = 30;   // seconds at the ends of the comparison's scale
+const regVal = (l, m) => l[m] == null ? null : l[m] * 60;
+function regColor(l, m) {
+  const x = regVal(l, m);
+  return m === "ew" ? scaleColor(EWS, x) : x == null ? NULLC : dvColor(-x * DV / DEW);   // growth: red, shrink: blue
+}
+const sgn = x => `${x > 0.5 ? "+" : x < -0.5 ? "−" : ""}${nf(Math.abs(Math.round(x)))}`;
+function regTip(l) {
+  if (l.ew == null) return "<br><span>Régularité : pas de mesure à l'arrêt d'arrivée</span>";
+  return `<br>À l'arrêt « ${esc(l.t)} » : attente <b class="tv">${nf(l.ws, 1)} min</b> prévue, <b class="tv">${nf(l.wr, 1)} min</b> réelle (${sgn(l.ew * 60)} s)`
+    + `<br>${nf(l.bu, 0)} % de véhicules groupés, ${nf(l.ga, 0)} % de trous`
+    + (l.dew == null ? "" : ` · attente en plus ${l.dew >= 0 ? "créée" : "résorbée"} sur ce tronçon : ${sgn(l.dew * 60)} s`);
+}
 function drawRank(R, MP) {
   const q = R.query, S_ = R.stretches || [];
   const modeTxt = q.lines ? (q.lines.length > 1 ? `les lignes ${q.lines.map(esc).join(", ")}` : `la ligne ${esc(q.lines[0])}`) : {all: "toutes les lignes", tram: "les trams", bus: "les bus", metro: "le métro"}[q.mode];
@@ -346,7 +375,7 @@ function linkTip(l) {
   const lb = x => badge(lineOf(x) || {line: x});
   const sp = l.metro ? `<span>Pas de vitesse : rames situées aux stations seulement</span>`
     : `<b class="tv">${nf(l.vr, 1)} km/h</b> entre arrêts · <b class="tv">${nf(l.v, 1)} km/h</b> avec arrêts`;
-  return `<b>${esc(l.f)} → ${esc(l.t)}</b><span class="lines">${l.l.slice(0, 10).map(lb).join("")}</span>${sp}<br>${nf(l.pd, 0)} passages par jour · ${nf(l.len)} m${l.term ? " · terminus (attente comprise)" : ""}${l.reg ? "<br>Arrêt de régulation : les véhicules y attendent, hors des vitesses" : ""}`;
+  return `<b>${esc(l.f)} → ${esc(l.t)}</b><span class="lines">${l.l.slice(0, 10).map(lb).join("")}</span>${sp}<br>${nf(l.pd, 0)} passages par jour · ${nf(l.len)} m${l.term ? " · terminus (attente comprise)" : ""}${l.reg ? "<br>Arrêt de régulation : les véhicules y attendent, hors des vitesses" : ""}${regTip(l)}`;
 }
 // to the right of the direction of travel, so both directions show when zoomed in
 function offsetPath(c, m = 9) {
@@ -361,12 +390,26 @@ function offsetPath(c, m = 9) {
 let RMAP = null, RLAYERS = [], BASE = [];
 function paintBase() {
   for (const {l, pl} of BASE) {
+    if (REGM.has(v.metric)) { pl.setStyle({color: regColor(l, v.metric), weight: 3, opacity: l.ew == null ? .6 : .95}); continue; }
     const val = l[v.metric];
     pl.setStyle({color: l.metro ? METROC : l.term ? NULLC : kmhColor(val), weight: 3, opacity: l.term && !l.metro ? .7 : .95});
   }
   $("rklg") && ($("rklg").innerHTML = legendHtml());
 }
+function regLegend(m) {
+  if (m === "ew") {
+    const top = EWS[EWS.length - 1][0], stops = EWS.map(([k, c]) => `${c} ${100 * k / top}%`).join(",");
+    return `<div class="lgh"><b>Attente en plus à l'arrêt d'arrivée</b> <span>secondes, réalité moins horaire</span></div><div class="lgb" style="background:linear-gradient(90deg,${stops})"></div>
+      <div class="lgt">${[0, 30, 60, 90, 120].map(k => `<i style="left:${100 * k / top}%">${k}</i>`).join("")}</div>
+      <div class="lgk"><span><i class="lgg"></i> pas de mesure</span><span><b class="rkicon lgn">1</b> tronçon du classement (vitesse)</span></div>`;
+  }
+  const stops = [-DEW, 0, DEW].map(x => `${dvColor(-x * DV / DEW)} ${100 * (x + DEW) / (2 * DEW)}%`).join(",");
+  return `<div class="lgh"><b>Attente en plus créée sur le tronçon</b> <span>secondes, d'un arrêt au suivant</span></div><div class="lgb" style="background:linear-gradient(90deg,${stops})"></div>
+    <div class="lgt">${[-10, -5, 0, 5, 10].map(k => `<i style="left:${100 * (k + DEW) / (2 * DEW)}%">${k > 0 ? "+" : ""}${k}</i>`).join("")}</div><div class="lgd"><span>résorbée</span><span>créée</span></div>
+    <div class="lgk"><span><i class="lgg"></i> pas de mesure</span></div>`;
+}
 function legendHtml() {
+  if (REGM.has(v.metric)) return regLegend(v.metric);
   const stops = KMH.map(([k, c]) => `${c} ${100 * (k - 4.5) / 22.5}%`).join(",");
   const ticks = [6, 12, 18, 24].map(k => `<i style="left:${100 * (k - 4.5) / 22.5}%">${k}</i>`).join("");
   return `<div class="lgh"><b>${v.metric === "vr" ? "Vitesse entre arrêts" : "Vitesse avec arrêts"}</b> <span>km/h</span></div><div class="lgb" style="background:linear-gradient(90deg,${stops})"></div><div class="lgt">${ticks}</div>
@@ -412,6 +455,10 @@ function dvColor(x) {
 const MIN_PD = 5;    // passages a day in both periods for a stretch to be listed
 function cmpRows(MA, MB) {
   const ref = new Map((MB.links || []).map(l => [l.k, l])), m = v.metric;
+  if (REGM.has(m)) return (MA.links || []).map(l => {      // seconds of excess wait, + = worse now
+    const r = ref.get(l.k), a = regVal(l, m), b = r ? regVal(r, m) : null, ok = a != null && b != null;
+    return {l, r, a, b, dv: ok ? a - b : null, ds: ok ? a - b : null, dh: ok ? a - b : null, listed: ok && l.pd >= MIN_PD && r.pd >= MIN_PD};
+  });
   return (MA.links || []).map(l => {
     const r = ref.get(l.k), a = l[m], b = r ? r[m] : null;
     const ok = a != null && b != null && a > 0 && b > 0;
@@ -422,12 +469,16 @@ function cmpRows(MA, MB) {
 function cmpTable(xs, kind) {
   if (!xs.length) return `<p class="lbl">Aucun tronçon.</p>`;
   const lb = x => badge(lineOf(x) || {line: x});
+  if (REGM.has(v.metric)) return `<table class="tbl"><thead><tr><th>Tronçon et lignes</th><th style="text-align:right" title="attente en plus, secondes, référence → période">s</th><th style="text-align:right">Écart</th></tr></thead><tbody>${xs.map(x =>
+    `<tr data-k="${esc(x.l.k)}"><td><b>${esc(x.l.f)} → ${esc(x.l.t)}</b><small>${nf(x.l.len)} m · ${nf(x.l.pd, 0)} passages / jour</small><div class="lines">${x.l.l.slice(0, 8).map(lb).join("")}</div></td>
+      <td class="n">${sgn(x.b)} → ${sgn(x.a)}</td><td class="n">${sgn(x.dv)} s</td></tr>`).join("")}</tbody></table>`;
   return `<table class="tbl"><thead><tr><th>Tronçon et lignes</th><th style="text-align:right">km/h</th><th style="text-align:right" title="secondes par véhicule">s / véh.</th><th style="text-align:right" title="heures-véhicule par jour, au nombre de passages de la période">h-véh. / jour</th></tr></thead><tbody>${xs.map(x =>
     `<tr data-k="${esc(x.l.k)}"><td><b>${esc(x.l.f)} → ${esc(x.l.t)}</b><small>${nf(x.l.len)} m · ${nf(x.l.pd, 0)} passages / jour</small><div class="lines">${x.l.l.slice(0, 8).map(lb).join("")}</div></td>
       <td class="n">${nf(x.b, 1)} → ${nf(x.a, 1)}</td><td class="n">${x.ds > 0 ? "+" : "−"}${nf(Math.abs(x.ds), 0)}</td><td class="n">${x.dh > 0 ? "+" : "−"}${nf(Math.abs(x.dh), 1)}</td></tr>`).join("")}</tbody></table>`;
 }
 function drawCompare(MA, MB) {
   const rows = cmpRows(MA, MB), n = PHONE.matches ? 10 : +$("rtop").value, metric = v.metric === "vr" ? "entre arrêts" : "avec arrêts";
+  if (REGM.has(v.metric)) return drawCompareMap(rows, MA, MB, n);
   const listed = rows.filter(x => x.listed);
   const worse = listed.filter(x => x.dh > 0).sort((a, b) => b.dh - a.dh).slice(0, n), better = listed.filter(x => x.dh < 0).sort((a, b) => a.dh - b.dh).slice(0, n);
   const tot = listed.reduce((s, x) => s + x.dh, 0), q = v.R.query, r = v.R2.query;
@@ -461,6 +512,47 @@ function drawCompare(MA, MB) {
   let sel = null;
   $("rout").querySelectorAll(".cmplists tbody tr").forEach(tr => tr.addEventListener("click", e => {
     if (e.target.closest("a")) return;
+    const pl = byK.get(tr.dataset.k); if (!pl) return;
+    $("rout").querySelectorAll(".cmplists tr.sel").forEach(x => x.classList.remove("sel")); tr.classList.add("sel");
+    if (sel) sel.pl.setStyle({color: sel.c, weight: 3});
+    sel = {pl, c: pl.options.color}; pl.setStyle({color: "#F3C300", weight: 6}); pl.bringToFront();
+    RMAP.fitBounds(pl.getBounds(), {maxZoom: 16, padding: [60, 60]}); pl.openTooltip();
+  }));
+}
+// the comparison of regularity: excess wait (at the arrival stop, or created along the link) against the reference
+function drawCompareMap(rows, MA, MB, n) {
+  const what = v.metric === "ew" ? "Attente en plus à l'arrêt d'arrivée" : "Attente en plus créée sur le tronçon";
+  const listed = rows.filter(x => x.listed), q = v.R.query, r = v.R2.query;
+  const worse = listed.filter(x => x.dv > 0).sort((a, b) => b.dv - a.dv).slice(0, n), better = listed.filter(x => x.dv < 0).sort((a, b) => a.dv - b.dv).slice(0, n);
+  $("rout").innerHTML = `<div class="rkgrid">
+      <div class="mapcol"><div id="rkmap"></div><div class="maplg" id="rklg"></div></div>
+      <div class="rklist cmplists"><h2 class="fh">Ce qui a changé</h2>
+        <p class="rk-sum">${esc(what)}, du <b>${fdate(q.first)}</b> au <b>${fdate(q.last)}</b> contre du <b>${fdate(r.first)}</b> au <b>${fdate(r.last)}</b>, en secondes. ${nf(listed.length)} tronçons mesurés dans les deux périodes.</p>
+        <h3>Moins réguliers</h3>${cmpTable(worse, "worse")}
+        <h3>Plus réguliers</h3>${cmpTable(better, "better")}</div>
+    </div>
+    <p class="method">Attente en plus : l'attente moyenne réelle moins celle de l'horaire, pour un voyageur arrivant au hasard. Seuls les tronçons avec au moins ${MIN_PD} passages par jour dans les deux périodes sont listés.</p>`;
+  if (RMAP) { RMAP.remove(); RMAP = null; }
+  RMAP = L.map("rkmap", {scrollWheelZoom: false, preferCanvas: true, zoomSnap: .25});
+  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+    {attribution: "Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors", maxZoom: 16}).addTo(RMAP);
+  const cv = L.canvas({tolerance: 6}), byK = new Map();
+  const tip = x => `<b>${esc(x.l.f)} → ${esc(x.l.t)}</b><span class="lines">${x.l.l.slice(0, 10).map(y => badge(lineOf(y) || {line: y})).join("")}</span>`
+    + (x.dv == null ? "<span>Pas de mesure dans l'une des deux périodes</span>" : `<b class="tv">${sgn(x.b)} → ${sgn(x.a)} s</b> (${sgn(x.dv)} s)`)
+    + `<br>${nf(x.l.pd, 0)} passages par jour · ${nf(x.l.len)} m`;
+  BASE = [];
+  for (const x of rows) {
+    const pl = L.polyline(offsetPath(x.l.c), {renderer: cv, lineCap: "butt", color: x.dv == null ? NULLC : dvColor(-x.dv * DV / CMPW), weight: x.listed ? 3 : 2, opacity: x.dv == null ? .6 : .95})
+      .bindTooltip(() => tip(x), {sticky: true, className: "rktip"}).addTo(RMAP);
+    byK.set(x.l.k, pl); BASE.push({l: x.l, pl});
+  }
+  if (BASE.length) RMAP.fitBounds(L.featureGroup(BASE.map(b => b.pl)).getBounds(), {padding: [8, 8]}); else RMAP.setView([50.85, 4.35], 12);
+  const stops = [-CMPW, 0, CMPW].map(x => `${dvColor(-x * DV / CMPW)} ${100 * (x + CMPW) / (2 * CMPW)}%`).join(",");
+  $("rklg").innerHTML = `<div class="lgh"><b>Écart d'attente en plus</b> <span>secondes, période moins référence</span></div><div class="lgb" style="background:linear-gradient(90deg,${stops})"></div>
+    <div class="lgt">${[-30, -15, 0, 15, 30].map(k => `<i style="left:${100 * (k + CMPW) / (2 * CMPW)}%">${k > 0 ? "+" : ""}${k}</i>`).join("")}</div><div class="lgd"><span>plus régulier</span><span>moins régulier</span></div>
+    <div class="lgk"><span><i class="lgg"></i> pas de mesure dans l'une des périodes</span></div>`;
+  let sel = null;
+  $("rout").querySelectorAll(".cmplists tbody tr").forEach(tr => tr.addEventListener("click", () => {
     const pl = byK.get(tr.dataset.k); if (!pl) return;
     $("rout").querySelectorAll(".cmplists tr.sel").forEach(x => x.classList.remove("sel")); tr.classList.add("sel");
     if (sel) sel.pl.setStyle({color: sel.c, weight: 3});

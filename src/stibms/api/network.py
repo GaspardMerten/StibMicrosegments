@@ -55,3 +55,16 @@ def network(request: Request, q=Depends(net_query)):
 @router.get("/api/network/map")
 def network_map(request: Request, q=Depends(map_query)):
     return respond(request, map_result(q))
+
+
+def line_reg_result(q) -> Result:
+    from .. import network as N
+    return Result("lineregularity", q, lambda: N.compute_line_regularity(state.data, q), heavy=False, keep=lambda r: bool(r.get("dirs")))
+
+
+@router.get("/api/network/regularity")
+def line_regularity(request: Request, q=Depends(map_query)):
+    """One line's regularity per stop and hour (``lines``: exactly one line)."""
+    if len(q.lines) != 1:
+        raise HTTPException(422, "lines : une seule ligne.")
+    return respond(request, line_reg_result(q))

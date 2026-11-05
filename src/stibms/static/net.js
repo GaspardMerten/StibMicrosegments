@@ -15,6 +15,11 @@ const millions = v => v == null ? "–" : v >= 1e6 ? `${nf(v / 1e6, 2)} million$
 const thousand = v => v == null ? "–" : nf(Math.round(v / 1000));
 const kmOf = (g, s) => g && (s === "all" ? {plan: g.plan_all, real: g.real_all, pct: g.pct_all} : {plan: g.plan, real: g.real, pct: g.pct});
 const daysOf = (m, s) => s === "all" ? m.days_all : m.days;
+const RG = g => (g && g.reg) || {};
+const mins = x => x == null ? "–" : `${nf(x, 1)}<u> min</u>`;
+const minT = x => x == null ? "–" : `${nf(x, 1)} min`;
+// the excess wait, minutes in the API, read in seconds
+const secs = x => x == null ? "–" : `${x > 0.005 ? "+" : x < -0.005 ? "−" : ""}${nf(Math.round(Math.abs(x) * 60))} s`;
 const groupsShown = R => (R.selection === "sel" ? ["sel"] : []).concat(["all", "bus", "tram", "metro"]);
 
 // a month's values, or the whole period's
@@ -49,6 +54,18 @@ function tilesHtml(R) {
     <div class="kpi"><label>Vitesse avec arrêts</label>${noSp ? `<b>n/d</b>` : `<b>${nf(g.v, 1)}<u> km/h</u></b><span>${vs(delta(g.v, pg && pg.v, "km/h")) || "temps aux arrêts compris"}</span>`}</div>
     <div class="kpi"><label>Km planifiés</label><b>${millions(km.plan)}</b><span>${perDay(km.plan)}</span></div>
     <div class="kpi"><label>Km réalisés</label><b>${millions(km.real)}</b><span><strong>${nf(km.pct, 1)} %</strong> du planifié${kp && kp.pct != null && km.pct != null ? ` · ${delta(km.pct, kp.pct, "pts")}` : ""}</span></div>
+  </div>${regTilesHtml(g, pg, vs)}`;
+}
+// regularity: the wait of a passenger arriving at random, by the timetable and for real
+function regTilesHtml(g, pg, vs) {
+  const r = RG(g), p = RG(pg);
+  if (r.wr == null) return "";
+  const dsec = (a, b) => a == null || b == null ? "" : delta(a * 60, b * 60, "s", 0);
+  return `<h3 class="kh">Régularité <small>temps entre deux véhicules d'une ligne, à chaque arrêt</small></h3><div class="kpis">
+    <div class="kpi"><label>Attente prévue</label><b>${mins(r.ws)}</b><span>par l'horaire, un véhicule toutes les ${esc(minT(r.hs))} en moyenne</span></div>
+    <div class="kpi"><label>Attente réelle</label><b>${mins(r.wr)}</b><span>${vs(delta(r.wr, p.wr, "min")) || "voyageur arrivant au hasard à l'arrêt"}</span></div>
+    <div class="kpi"><label>Attente en plus</label><b>${secs(r.ew)}</b><span>${vs(dsec(r.ew, p.ew)) || "due aux écarts entre véhicules"}</span></div>
+    <div class="kpi"><label>Intervalles réguliers</label><b>${nf(r.ok, 1)}<u> %</u></b><span>${nf(r.bunch, 1)} % de véhicules groupés, ${nf(r.gap, 1)} % de trous</span></div>
   </div>`;
 }
 // ---------------------------------------------------------------- comparison: the period against a reference period
@@ -56,7 +73,9 @@ function cmpVals(R, k) {
   const g = R.total[k];
   if (!g) return null;
   const km = kmOf(g, st.scope), d = st.scope === "all" ? R.days_all : R.days;
-  return {vr: g.vr, v: g.v, real: d ? km.real / d : null, plan: d ? km.plan / d : null, pct: km.pct};
+  const r = RG(g);
+  return {vr: g.vr, v: g.v, real: d ? km.real / d : null, plan: d ? km.plan / d : null, pct: km.pct,
+    ew: r.ew == null ? null : r.ew * 60, wr: r.wr, ok: r.ok};
 }
 const sign = (x, d, unit) => x == null ? "–" : Math.abs(x) < .5 * 10 ** -d ? "stable" : `${x > 0 ? "+" : "−"}${nf(Math.abs(x), d)}${unit ? " " + unit : ""}`;
 const diff = (a, b) => a == null || b == null ? null : a - b;
@@ -68,16 +87,17 @@ function compareHtml(R, R2) {
     <span class="ref">référence ${small(y)} · <strong>${sign(diff(x, y), d, unit)}</strong></span></div>`;
   const kmhT = x => x == null ? "–" : `${nf(x, 1)} km/h`;
   const kmh = x => x == null ? "–" : `${nf(x, 1)}<u> km/h</u>`, kmd = x => x == null ? "–" : nf(Math.round(x / 100) * 100), pc = x => x == null ? "–" : `${nf(x, 1)} %`;
-  const keys = groupsShown(R), cols = [["vr", "Entre arrêts", 1, "km/h"], ["v", "Avec arrêts", 1, "km/h"], ["real", "Km réalisés / jour", 0, ""], ["pct", "% du planifié", 1, "pts"]];
+  const keys = groupsShown(R), cols = [["vr", "Entre arrêts", 1, "km/h"], ["v", "Avec arrêts", 1, "km/h"], ["real", "Km réalisés / jour", 0, ""], ["pct", "% du planifié", 1, "pts"],
+    ["ew", "Attente en plus (s)", 0, "s"], ["ok", "Intervalles réguliers", 1, "pts"]];
   const head1 = cols.map(([, t]) => `<th colspan="3" class="gh sub3">${t}</th>`).join("");
   const head2 = cols.map(() => `<th class="sub3">Période</th><th>Réf.</th><th>Écart</th>`).join("");
-  const fmt = (k, x) => x == null ? "–" : k === "real" ? nf(Math.round(x / 10) * 10) : nf(x, 1);
+  const fmt = (k, x) => x == null ? "–" : k === "real" ? nf(Math.round(x / 10) * 10) : k === "ew" ? nf(x, 0) : nf(x, 1);
   const rows = keys.map(k => {
     const x = cmpVals(R, k), y = cmpVals(R2, k);
     if (!x || !y) return "";
     return `<tr><th scope="row"><i class="dot" style="background:${COL[k]}"></i>${esc(NAME[k])}</th>${cols.map(([c, , d]) => {
       const ns = k === "metro" && (c === "v" || c === "vr");
-      return ns ? `<td class="sub3">–</td><td>–</td><td>–</td>` : `<td class="sub3">${fmt(c, x[c])}</td><td>${fmt(c, y[c])}</td><td class="dlt">${sign(diff(x[c], y[c]), c === "real" ? 0 : d)}</td>`;
+      return ns ? `<td class="sub3">–</td><td>–</td><td>–</td>` : `<td class="sub3">${fmt(c, x[c])}</td><td>${fmt(c, y[c])}</td><td class="dlt">${sign(diff(x[c], y[c]), c === "real" || c === "ew" ? 0 : d)}</td>`;
     }).join("")}</tr>`;
   }).join("");
   return `<section class="cmp"><div class="fhr"><h2 class="fh">Comparaison · ${esc(NAME[key])}</h2></div>
@@ -85,6 +105,7 @@ function compareHtml(R, R2) {
     <div class="kpis">${noSp ? `<div class="kpi"><label>Vitesse</label><b>n/d</b><span>Pas de vitesse pour le métro.</span></div><div class="kpi"><label>&nbsp;</label><b>&nbsp;</b></div>`
       : tile("Vitesse entre arrêts", a.vr, b.vr, 1, "km/h", kmh, kmhT) + tile("Vitesse avec arrêts", a.v, b.v, 1, "km/h", kmh, kmhT)}
       ${tile("Km réalisés par jour", a.real, b.real, 0, "km", kmd, kmd)}${tile("Part du planifié roulée", a.pct, b.pct, 1, "pts", pc, pc)}</div>
+    ${a.wr == null || b.wr == null ? "" : `<div class="kpis kp2">${tile("Attente réelle", a.wr, b.wr, 1, "min", mins, minT)}${tile("Attente en plus", a.ew, b.ew, 0, "s", x => `${nf(x, 0)}<u> s</u>`, x => `${nf(x, 0)} s`)}${tile("Intervalles réguliers", a.ok, b.ok, 1, "pts", pc, pc)}</div>`}
     <div class="tscroll" style="margin-top:12px"><table class="mt"><thead><tr><th rowspan="2" class="mh">Groupe</th>${head1}</tr><tr>${head2}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 function speedSeries(R, field) {
@@ -97,6 +118,11 @@ function kmSeries(R) {
   const perDay = (m, f) => { const g = m.groups[key], d = daysOf(m, s), k = kmOf(g, s); return g && d ? Math.round(k[f] / d) : null; };
   return [{name: "Planifié", color: COL.plan, values: Object.fromEntries(R.months.map(m => [m.month, perDay(m, "plan")]))},
     {name: "Réalisé", color: key === "all" ? COL.sel : COL[key], values: Object.fromEntries(R.months.map(m => [m.month, perDay(m, "real")]))}];
+}
+function regSeries(R) {
+  const key = R.selection, val = (m, f) => (RG(m.groups[key])[f]) ?? null;
+  return [{name: "Prévue (horaire)", color: COL.plan, values: Object.fromEntries(R.months.map(m => [m.month, val(m, "ws")]))},
+    {name: "Réelle", color: key === "all" ? COL.sel : COL[key], values: Object.fromEntries(R.months.map(m => [m.month, val(m, "wr")]))}];
 }
 const legend = series => `<div class="lg">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join("")}</div>`;
 function allTxt(R) {
@@ -113,8 +139,10 @@ function chartsHtml(R) {
   const speed = R.selection === "metro" ? "" : `
     <figure class="card"><figcaption><b>Vitesse entre arrêts</b><small>km/h, ${esc(hoursTxt(q))}, ${esc(daysTxt(q))}</small></figcaption><div id="cr"></div>${legend(sr)}</figure>
     <figure class="card"><figcaption><b>Vitesse avec arrêts</b><small>km/h, ${esc(hoursTxt(q))}, ${esc(daysTxt(q))}</small></figcaption><div id="cc"></div>${legend(sc)}</figure>`;
-  return `<div class="cards${speed ? "" : " one"}">${speed}
+  const rg = regSeries(R);
+  return `<div class="cards ${speed ? "c4" : "c2"}">${speed}
     <figure class="card"><figcaption><b>Production kilométrique</b><small>km par jour (${st.scope === "all" ? allTxt(R) : esc(daysTxt(q) + ", " + hoursTxt(q))})</small></figcaption><div id="ck"></div>${legend(km)}</figure>
+    <figure class="card"><figcaption><b>Attente moyenne à l'arrêt</b><small>minutes, par l'horaire et en réalité, ${esc(hoursTxt(q))}, ${esc(daysTxt(q))}</small></figcaption><div id="cw"></div>${legend(rg)}</figure>
   </div>`;
 }
 function drawCharts(R) {
@@ -124,6 +152,7 @@ function drawCharts(R) {
   if ($("cr")) lineChart($("cr"), {...common, series: speedSeries(R, "vr"), digits: 1, label: "Vitesse entre arrêts par mois, km/h"});
   if ($("cc")) lineChart($("cc"), {...common, series: speedSeries(R, "v"), digits: 1, label: "Vitesse avec arrêts par mois, km/h"});
   lineChart($("ck"), {...common, series: kmSeries(R), digits: 0, zero: true, label: "Kilomètres par jour planifiés et réalisés, par mois"});
+  lineChart($("cw"), {...common, series: regSeries(R), digits: 1, label: "Attente moyenne à l'arrêt par l'horaire et en réalité, par mois, minutes"});
 }
 // ---------------------------------------------------------------- table: months x groups
 // ---------------------------------------------------------------- days left out: strikes (option) and days without feed
@@ -143,25 +172,28 @@ function leftOutHtml(R) {
 }
 function tableHtml(R) {
   const keys = groupsShown(R), noSp = k => k === "metro", s = st.scope;
-  const head1 = keys.map(k => `<th colspan="${noSp(k) ? 3 : 5}" class="gh"><i style="background:${COL[k]}"></i>${esc(k === "all" ? "Réseau" : NAME[k])}</th>`).join("");
-  const head2 = keys.map(k => `${noSp(k) ? "" : `<th title="Vitesse entre arrêts, km/h">Entre arrêts</th><th title="Vitesse avec arrêts, km/h">Avec arrêts</th>`}<th title="Km planifiés, en milliers">Plan.</th><th title="Km réalisés, en milliers">Réal.</th><th title="Km réalisés / planifiés, sur les heures où le flux fonctionne">%</th>`).join("");
+  const head1 = keys.map(k => `<th colspan="${noSp(k) ? 4 : 6}" class="gh"><i style="background:${COL[k]}"></i>${esc(k === "all" ? "Réseau" : NAME[k])}</th>`).join("");
+  const head2 = keys.map(k => `${noSp(k) ? "" : `<th title="Vitesse entre arrêts, km/h">Entre arrêts</th><th title="Vitesse avec arrêts, km/h">Avec arrêts</th>`}<th title="Km planifiés, en milliers">Plan.</th><th title="Km réalisés, en milliers">Réal.</th><th title="Km réalisés / planifiés, sur les heures où le flux fonctionne">%</th><th title="Attente en plus due à l'irrégularité, secondes">Att. +</th>`).join("");
   const cells = (g, k) => {
     const km = kmOf(g, s);
-    return `${noSp(k) ? "" : `<td class="s0">${nf(g && g.vr, 1)}</td><td>${nf(g && g.v, 1)}</td>`}<td class="k0">${thousand(km && km.plan)}</td><td>${thousand(km && km.real)}</td><td>${nf(km && km.pct, 1)}</td>`;
+    return `${noSp(k) ? "" : `<td class="s0">${nf(g && g.vr, 1)}</td><td>${nf(g && g.v, 1)}</td>`}<td class="k0">${thousand(km && km.plan)}</td><td>${thousand(km && km.real)}</td><td>${nf(km && km.pct, 1)}</td><td>${secs(RG(g).ew)}</td>`;
   };
   const rows = [...R.months].reverse().map(m => {
     const part = m.days_all < m.days_in_month ? `<small title="${m.days_all} jours comptés sur ${m.days_in_month}"> ${m.days_all} j</small>` : "";
     return `<tr data-m="${m.month}" class="${st.focus === m.month ? "on" : ""}"><th scope="row">${esc(fmonth(m.month))}${part}</th>${keys.map(k => cells(m.groups[k], k)).join("")}</tr>`;
   }).join("");
   const tot = `<tr class="tot"><th scope="row">Toute la période</th>${keys.map(k => cells(R.total[k], k)).join("")}</tr>`;
-  return `<div class="tblhead"><h2>Synthèse par mois</h2><span>Vitesses en km/h (${esc(hoursTxt(R.query))}, ${esc(daysTxt(R.query))}, bus + tram pour le réseau). Km en milliers (${s === "all" ? allTxt(R) : "jours et heures choisis"}).</span><button type="button" class="mini" id="rcsv">Télécharger le CSV</button></div>
+  return `<div class="tblhead"><h2>Synthèse par mois</h2><span>Vitesses en km/h (${esc(hoursTxt(R.query))}, ${esc(daysTxt(R.query))}, bus + tram pour le réseau). Km en milliers (${s === "all" ? allTxt(R) : "jours et heures choisis"}). Attente en plus en secondes.</span><button type="button" class="mini" id="rcsv">Télécharger le CSV</button></div>
     <div class="tscroll"><table class="mt"><thead><tr><th rowspan="2" class="mh">Mois</th>${head1}</tr><tr>${head2}</tr></thead><tbody>${rows}${tot}</tbody></table></div>`;
 }
 function csv(R) {
-  const keys = groupsShown(R), s = st.scope, rows = [["mois", "groupe", "jours", "vitesse_entre_arrets_kmh", "vitesse_avec_arrets_kmh", "km_planifies", "km_realises", "pct_realise"].join(",")];
+  const keys = groupsShown(R), s = st.scope, rows = [["mois", "groupe", "jours", "vitesse_entre_arrets_kmh", "vitesse_avec_arrets_kmh", "km_planifies", "km_realises", "pct_realise",
+    "attente_prevue_min", "attente_reelle_min", "attente_en_plus_s", "intervalles_reguliers_pct", "vehicules_groupes_pct", "trous_pct"].join(",")];
   for (const m of R.months) for (const k of keys) {
     const g = m.groups[k], km = kmOf(g, s);
-    if (g) rows.push([m.month, NAME[k], daysOf(m, s), g.vr ?? "", g.v ?? "", km.plan, km.real, km.pct ?? ""].join(","));
+    const r = RG(g);
+    if (g) rows.push([m.month, NAME[k], daysOf(m, s), g.vr ?? "", g.v ?? "", km.plan, km.real, km.pct ?? "",
+      r.ws ?? "", r.wr ?? "", r.ew == null ? "" : Math.round(r.ew * 60), r.ok ?? "", r.bunch ?? "", r.gap ?? ""].join(","));
   }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([rows.join("\n") + "\n"], {type: "text/csv;charset=utf-8"}));
@@ -175,6 +207,7 @@ function methodHtml(R) {
     <p><b>Vitesses.</b> Distance parcourue divisée par le temps passé, mesuré par les positions envoyées toutes les 20 s. « Entre arrêts » retire les zones d'arrêt (de l'approche jusqu'au départ). Le premier et le dernier tronçon de chaque parcours ne comptent pas : on y attend au terminus. Les tronçons de régulation non plus : ceux où, ce mois-là, au moins la moitié du temps perdu vient de véhicules à l'arrêt 3 minutes ou plus. Partout ailleurs, un véhicule bloqué compte. Les heures où le flux est incomplet ne comptent pas non plus.</p>
     <p><b>Métro.</b> La STIB ne situe les rames qu'aux stations : ses kilomètres sont comptés, pas sa vitesse. La vitesse du réseau est donc celle des bus et des trams.</p>
     <p><b>Km planifiés.</b> Les trajets du GTFS en vigueur ce jour-là, chacun réparti sur les heures où il roule. Un jour de grève, le GTFS contient parfois déjà le service réduit : le planifié est alors le plan revu. <b>Km réalisés.</b> Les passages observés multipliés par la longueur de chaque tronçon. Le % ne compte que les heures où le flux fonctionne : une ligne absente d'un flux qui fonctionne n'a pas roulé. Ce % situe bien l'évolution d'un mois à l'autre ; son niveau reste approximatif (environ 1 % d'écart de longueur entre sources, passages manqués possibles).</p>
+    <p><b>Régularité.</b> À chaque arrêt, le temps entre deux véhicules d'une même ligne et d'une même direction, d'après l'horaire et d'après les heures de passage réelles (flux de ponctualité de la STIB, heures observées seulement). L'attente moyenne est celle d'un voyageur qui arrive au hasard : la moitié de l'intervalle, plus une part qui grandit avec les écarts entre intervalles. Deux bus prévus toutes les 10 minutes qui passent ensemble font attendre 10 minutes en moyenne au lieu de 5. L'<b>attente en plus</b> est la différence entre réalité et horaire : ce que coûte l'irrégularité. Un véhicule est « groupé » quand il suit le précédent à moins de la moitié de l'intervalle prévu, un « trou » quand l'intervalle dépasse une fois et demie le prévu. Horaire et réalité portent sur les mêmes courses : une course supprimée ou non suivie manque des deux côtés ; les courses supprimées se voient dans les km réalisés. Le dernier arrêt de chaque course ne compte pas, ni un arrêt où le flux a manqué plus d'un passage sur cinq ce jour-là.</p>
     <p><b>Repères officiels</b> (<a href="${STIB_URL}" target="_blank" rel="noopener">rapport statistique STIB 2025</a>). Vitesse cible, moyenne de la semaine, service d'hiver : tram ${nf(o.speed.tram[0], 1)} km/h en 2025 (${nf(o.speed.tram[1], 1)} en 2024), bus ${nf(o.speed.bus[0], 1)} (${nf(o.speed.bus[1], 1)}), métro ${nf(o.speed.metro[0], 1)} (${nf(o.speed.metro[1], 1)}). Pour comparer, choisissez tous les jours et toutes les heures. Kilomètres en service commercial : ${nf(o.km.all[0], 2)} millions en 2025 (${nf(o.km.all[1], 2)} en 2024), dont bus ${nf(o.km.bus[0], 2)}, tram ${nf(o.km.tram[0], 2)}, métro ${nf(o.km.metro[0], 2)} et taxibus ${nf(o.km.taxibus[0], 2)}. Les taxibus ne sont pas dans nos données.</p>
   </details>`;
 }

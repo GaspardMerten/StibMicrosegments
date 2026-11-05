@@ -421,7 +421,7 @@ class Data:
             rel = derived(f"_SUCCESS/month={month}.json")
             try:
                 rep = self.store.read_json(rel)
-                return "".join(rep.get(k, "") for k in ("written_at", "passages_rewritten_at", "linkcube_rewritten_at"))
+                return "".join(rep.get(k, "") for k in ("written_at", "passages_rewritten_at", "linkcube_rewritten_at", "regularity_written_at"))
             except FileNotFoundError:
                 return ""
         return self._cached(f"mstamp:{month}", f, ttl=120)

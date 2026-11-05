@@ -5,6 +5,7 @@ per line (layout in ``stibms.data``).
     python -m stibms.derive --from 2024-04 --to 2026-10 --coverage-only     # coverage files only
     python -m stibms.derive --from 2024-04 --to 2026-10 --linkcube-only     # ranking cubes only
     python -m stibms.derive --from 2024-04 --to 2026-10 --passages-events-only   # event passages + cubes
+    python -m stibms.derive --from 2024-04 --to 2026-10 --regularity-only   # headway tables only
     python -m stibms.derive --linenets-only        # per-line network copies (route changes) only
 
 Steps for a month M (dates = ingested service dates of M):
@@ -23,6 +24,8 @@ Steps for a month M (dates = ingested service dates of M):
    doubled, when it closes, after a package change or with ``--full`` (``stibms.increment``).
 4. **Link cube** of the month, all lines (``linkcube/month=M/``, see ``stibms.linkcube``): what the
    network ranking sums for any window, so the API never runs the per-line analyses for it.
+5. **Regularity** of the month, all lines (``linkcube/month=M/headways``, ``reglines``, see ``stibms.regularity``):
+   headways by the timetable and for real, from the punctuality stop times.
 
 Segment length, phase and stop zone are not fixed here: the API segments on request.
 Re-running an up-to-date month does nothing; ``--full`` rewrites its files (idempotent). Run months
@@ -292,18 +295,45 @@ def derive_month(data: Data, month: str, lines: list[str] | None = None, force_p
     data.invalidate()
     cube = linkcube.write_month(data, month, lines)
     t_cube = time.time() - t3
+    reg = _regularity_step(data, month, dates)
     report = increment.report(month, dates, plan, prev, per_line, failed, partial=lines is not None)
     report.update({
         "seconds": {"patterns": round(t_pat, 1), "coverage": round(t_cov, 1), "split": round(t_split, 1),
                     "lines": round(sum(r.get("seconds", 0) for r in per_line), 1), "linkcube": round(t_cube, 1),
                     "total": round(time.time() - t0, 1)},
-        "patterns": pat, "linkcube": {k: cube[k] for k in ("rows", "failed")}, "placed_at": started,
+        "patterns": pat, "linkcube": {k: cube[k] for k in ("rows", "failed")}, "regularity": reg, "placed_at": started,
         "written_at": _now()})
     data.store.write_json(derived(f"_SUCCESS/month={month}.json"), report)
     data.invalidate()
     log.info("%s: %s, %d dates (%d placed), %d lines, %d failed, %s", month, plan["mode"], len(dates),
              len(plan["days"]), len(per_line), len(failed), report["seconds"])
     return report
+
+
+def _regularity_step(data: Data, month: str, dates: list[dt.date]) -> dict:
+    """The month's headway tables (``stibms.regularity``); a failure leaves the month's other tables standing."""
+    from . import regularity
+    try:
+        return regularity.write_month(data, month, dates)
+    except Exception as e:  # noqa: BLE001
+        log.exception("%s regularity failed", month)
+        return {"month": month, "failed": repr(e)[:200]}
+
+
+def rewrite_regularity(data: Data, month: str) -> dict:
+    """Only the month's headway tables, from its raw punctuality files. ``regularity_written_at`` goes into the
+    month's stamp."""
+    t0 = time.time()
+    rel, rep = _month_report(data, month)
+    if rep is None:
+        log.warning("%s: not derived, no regularity", month)
+        return {"month": month, "lines": 0, "failed": {}}
+    out = _regularity_step(data, month, data.month_ingested(month))
+    rep.update({"regularity_written_at": _now(), "regularity": out})
+    data.store.write_json(rel, rep)
+    data.invalidate()
+    failed = {"regularity": out["failed"]} if "failed" in out else {}
+    return {"month": month, "lines": out.get("rows"), "failed": failed, "seconds": round(time.time() - t0, 1)}
 
 
 def _month_report(data: Data, month: str) -> tuple[str, dict | None]:
@@ -436,6 +466,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="only recompute the coverage files of the months (fast; e.g. after a package change)")
     ap.add_argument("--linkcube-only", action="store_true",
                     help="only rebuild the ranking link cubes from the derived placed / passages files")
+    ap.add_argument("--regularity-only", action="store_true",
+                    help="only rebuild the headway tables (stibms.regularity) from raw punctuality")
     ap.add_argument("--passages-events-only", action="store_true",
                     help="only recompute the stop-event passages (n_events, n) from raw punctuality, then the link cubes")
     args = ap.parse_args(argv)
@@ -454,6 +486,8 @@ def main(argv: list[str] | None = None) -> int:
             rep = rewrite_coverage(data, m)
         elif args.linkcube_only:
             rep = rewrite_linkcube(data, m)
+        elif args.regularity_only:
+            rep = rewrite_regularity(data, m)
         elif args.passages_events_only:
             rep = rewrite_passages(data, m, lines)
         else:

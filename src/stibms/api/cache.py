@@ -23,7 +23,7 @@ SHORT_CACHE = "public, max-age=300"
 # Bump when the JSON a result holds changes without the data changing (page options such as
 # show_hotspots, contract fields): older bucket results are then ignored instead of served.
 # 8: line absence over ingested days only (a refactor changed it under 7); coverage and versions cached.
-RESULT_REV = 9
+RESULT_REV = 10
 
 
 @functools.cache

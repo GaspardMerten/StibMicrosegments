@@ -21,7 +21,7 @@ export function monthAxis(months) {
 }
 const monLab = (m, yr) => { const [y, n] = m.split("-"); return MON3[+n - 1] + (yr ? " " + y.slice(2) : ""); };
 
-// spec: {axis: [month], series: [{name, color, width?, values: {month: y}}], unit, digits, focus, onPick, zero}
+// spec: {axis: [month] (or any keys, with xLabel(key, i) -> text or ""), series: [{name, color, width?, values: {month: y}}], unit, digits, focus, onPick, zero}
 export function lineChart(el, spec) {
   el.innerHTML = "";
   el.classList.add("lc");
@@ -51,9 +51,10 @@ export function lineChart(el, spec) {
   // month labels: never colliding, the year at each January and at the start
   const every = Math.max(1, Math.ceil(axis.length / Math.max(2, Math.floor((W - M.l - M.r) / 62))));
   axis.forEach((m, i) => {
-    if (i % every && i !== axis.length - 1) return;
-    if (i === axis.length - 1 && i % every && (i % every) * (W - M.l - M.r) / Math.max(1, axis.length - 1) < 50) return;
-    parts.push(`<text class="ax" x="${x(i)}" y="${H - 7}" text-anchor="middle">${esc(monLab(m, i === 0 || m.endsWith("-01")))}</text>`);
+    if (!spec.xLabel && i % every && i !== axis.length - 1) return;      // xLabel picks its own ticks
+    if (!spec.xLabel && i === axis.length - 1 && i % every && (i % every) * (W - M.l - M.r) / Math.max(1, axis.length - 1) < 50) return;
+    const lab = spec.xLabel ? spec.xLabel(m, i) : monLab(m, i === 0 || m.endsWith("-01"));
+    if (lab) parts.push(`<text class="ax" x="${x(i)}" y="${H - 7}" text-anchor="middle">${esc(lab)}</text>`);
   });
   const fi = axis.indexOf(spec.focus);
   if (fi >= 0) parts.push(`<line class="fc" x1="${x(fi)}" x2="${x(fi)}" y1="${M.t}" y2="${H - M.b}"/>`);

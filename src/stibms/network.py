@@ -44,14 +44,14 @@ from dataclasses import dataclass
 
 import polars as pl
 
-from . import ms, schedule
+from . import ms, regularity, schedule
 from .data import ALGO_VERSION, Data, by_line, date_range, month_dates, months_between
 from .linkcube import TICK_S
 from .linkcube import rel as cube_rel
 from .queries import check_days, check_dow, check_holidays, check_span, days_canonical, digest
 from .stopzones import APPROACH_M, default_head, heads
 
-NET_VERSION = 5
+NET_VERSION = 6
 NOFEED_SHARE = 0.5          # under this share of the planned km in hours with feed: a day without data
 STRIKE_RATIO = 0.75         # under this share of the planned km run, feed up: a strike day
 MODES = ("all", "bus", "tram", "metro")
@@ -192,7 +192,8 @@ def _group_values(rows: list[dict], speed: bool) -> dict:
     return {"v": kmh(t["d_s"], t["t_s"]), "vr": kmh(t["d_r"], t["t_r"]),
             "plan": round(t["plan"]), "real": round(t["real"]), "pct": pct(t["real_ok"], t["plan_ok"]),
             "plan_all": round(t["plan_all"]), "real_all": round(t["real_all"]), "pct_all": pct(t["real_ok_all"], t["plan_ok_all"]),
-            "n_lines": sum(1 for r in rows if r["plan_all"] > 0 or r["real_all"] > 0)}
+            "n_lines": sum(1 for r in rows if r["plan_all"] > 0 or r["real_all"] > 0),
+            "reg": regularity.waits({c: sum(r.get("g_" + c, 0.0) for r in rows) for c in regularity.SUMS})}
 
 
 def _groups(q: NetQuery, modes: dict) -> dict[str, tuple]:
@@ -251,6 +252,15 @@ def _month_tables(data: Data, q: NetQuery, month: str):
     return lh.filter(span), plan.filter(span)
 
 
+def _month_reg(data: Data, q: NetQuery, month: str) -> pl.DataFrame | None:
+    """The month's per-line headway sums (``stibms.regularity``) on its own days within the query."""
+    rg = _table(data, month, "reglines")
+    if rg is None:
+        return None
+    days = month_dates(month)
+    return rg.filter(pl.col("service_date").is_between(max(q.first, days[0]), min(q.last, days[-1])))
+
+
 def _left_out(q: NetQuery, an: dict) -> tuple[set, set]:
     """(days out of the query's selection, days out of the whole-month km) from a month's anomalies."""
     nofeed = {d for d, (w, _) in an.items() if w == "nofeed"}
@@ -287,7 +297,10 @@ def _month_rows(data: Data, q: NetQuery, month: str, excluded: set, modes: dict,
     a, b = _per_line_month(lh, plan, sel), _per_line_month(lh, plan, ~pl.col("service_date").is_in(sorted(out_all)))
     b = b.select("line", pl.col("real").alias("real_all"), pl.col("real_ok").alias("real_ok_all"),
                  pl.col("plan").alias("plan_all"), pl.col("plan_ok").alias("plan_ok_all"))
-    rows = (b.join(a, on="line", how="left").fill_null(0.0)).to_dicts()
+    rg = _month_reg(data, q, month)
+    g = (rg.filter(sel).group_by("line").agg(regularity.sums()).rename({c: "g_" + c for c in regularity.SUMS})
+         if rg is not None else pl.DataFrame(schema={"line": pl.Utf8, **{"g_" + c: pl.Float64 for c in regularity.SUMS}}))
+    rows = (b.join(a, on="line", how="left").join(g, on="line", how="full", coalesce=True).fill_null(0.0)).to_dicts()
     days = set(lh["service_date"].unique().to_list()) | set(plan["service_date"].unique().to_list())
     kept = [d for d in days if d.weekday() in q.dow and d not in excluded]
     left = [{"date": d.isoformat(), "why": w, "pct": p, "out": d in out_all} for d, (w, p) in sorted(an.items())]
@@ -358,6 +371,48 @@ def _month_links(data: Data, q: MapQuery, month: str, excluded: set, keep: pl.Ex
                     ((pl.col("o_r") + pl.col("o_s")) * whole).alias("o_v"), (pl.col("o_r") * between).alias("o_r"))
 
 
+def _month_stops(data: Data, q: MapQuery, month: str, excluded: set, keep: pl.Expr | None) -> pl.DataFrame | None:
+    """Per (line, stop): the headway sums (``stibms.regularity``) of the days and hours asked for in this month."""
+    h = data.read_optional(regularity.rel(month, "headways"), ["line", "stop_id", "service_date", "hour", *regularity.SUMS])
+    if h is None or not h.height:
+        return None
+    days = month_dates(month)
+    f = h.filter(pl.col("service_date").is_between(max(q.first, days[0]), min(q.last, days[-1])) & _keep_days(q, excluded) & _in_hours(q))
+    if keep is not None:
+        f = f.filter(keep)
+    return f.group_by("line", "stop_id").agg(regularity.sums())
+
+
+def _link_regularity(x: pl.DataFrame, stops: list[pl.DataFrame]) -> pl.DataFrame:
+    """Per link: headway sums at its arrival stop (``t_``) over the lines on it, and at both ends (``a_``, ``b_``)
+    over the lines measured at both, for how much the excess wait grows along the link."""
+    cols = list(regularity.SUMS)
+    st = pl.concat(stops).group_by("line", "stop_id").agg(pl.col(c).sum() for c in cols)
+    ends = pl.col("link_key").str.split("~").list.first().str.split(">")
+    y = (x.select("line", "link_key").with_columns(ends.list.get(0, null_on_oob=True).alias("_a"), ends.list.get(-1, null_on_oob=True).alias("_b"))
+         .join(st.rename({c: "a_" + c for c in cols}), left_on=["line", "_a"], right_on=["line", "stop_id"], how="left")
+         .join(st.rename({c: "b_" + c for c in cols}), left_on=["line", "_b"], right_on=["line", "stop_id"], how="left")
+         .fill_null(0.0))
+    both = (pl.col("a_n") > 0) & (pl.col("b_n") > 0)
+    return y.group_by("link_key").agg(*[pl.col("b_" + c).sum().alias("t_" + c) for c in cols],
+                                      *[pl.col(p + c).filter(both).sum().alias(p + c) for p in ("a_", "b_") for c in cols])
+
+
+def _reg_of(r: dict, p: str) -> dict:
+    return regularity.waits({c: r[p + c] or 0.0 for c in regularity.SUMS})
+
+
+def _link_reg(r: dict) -> dict:
+    """The map's regularity of a link: at its arrival stop (``ew`` excess wait, ``ws`` / ``wr`` waits by the timetable
+    and for real, minutes; ``bu`` / ``ga`` % bunched and gaps) and ``dew``: how much the excess wait grows along it."""
+    if r.get("t_n") is None or not r["t_n"]:
+        return {}
+    t = _reg_of(r, "t_")
+    a, b = _reg_of(r, "a_"), _reg_of(r, "b_")
+    dew = round(b["ew"] - a["ew"], 2) if a["ew"] is not None and b["ew"] is not None else None
+    return {"ew": t["ew"], "ws": t["ws"], "wr": t["wr"], "bu": t["bunch"], "ga": t["gap"], "dew": dew}
+
+
 def _thin(geo: list | None) -> list:
     """Coordinates rounded (about 1 m), points closer than ``_GEO_STEP`` dropped, the ends kept: the map's
     payload is a whole network."""
@@ -384,6 +439,7 @@ def compute_map(data: Data, q: MapQuery) -> dict:
             excluded |= _left_out(q, _anomalies(lh, plan, reduced))[0]
     with ThreadPoolExecutor(max_workers=min(4, max(1, len(months)))) as ex:   # hourly tables: a few at a time
         got = [x for x in ex.map(lambda m: _month_links(data, q, m, excluded, keep), months) if x is not None and x.height]
+        stops = [x for x in ex.map(lambda m: _month_stops(data, q, m, excluded, keep), months) if x is not None and x.height]
     empty = {"query": q.canonical(), "links": [], "status": "done", "n_days": 0, "seconds": round(time.time() - t0, 2)}
     if not got:
         return empty
@@ -408,6 +464,8 @@ def compute_map(data: Data, q: MapQuery) -> dict:
         (pl.col("o_r") * TICK_S).filter(~pl.col("nosp")).sum().alias("tr"),
         pl.col("n").sum(), pl.col("days").max(), pl.col("nosp").all().alias("metro"), (pl.col("term") == 1).any().alias("term"),
         pl.col("from_name").first(), pl.col("to_name").first(), pl.col("line").unique().alias("lines"), pl.col("len_m").median()))
+    if stops:
+        g = g.join(_link_regularity(x, stops), on="link_key", how="left")
     reg = _registry(data)
     geo = {}
     if reg is not None:
@@ -425,6 +483,96 @@ def compute_map(data: Data, q: MapQuery) -> dict:
         out.append({"k": r["link_key"], "c": c, "f": title_name(r["from_name"]), "t": title_name(r["to_name"]),
                     "l": sorted(r["lines"], key=by_line), "pd": round(per_day, 1), "len": round(r["len_m"] or 0),
                     "v": kmh(r["d"], r["t"], ok), "vr": kmh(r["dr"], r["tr"], ok),
-                    "term": bool(r["term"]), "metro": bool(r["metro"]), "reg": bool(ok and (r["d"] <= 0 or r["dr"] <= 0))})
+                    "term": bool(r["term"]), "metro": bool(r["metro"]), "reg": bool(ok and (r["d"] <= 0 or r["dr"] <= 0)),
+                    **_link_reg(r)})
     return {"query": q.canonical(), "links": out, "status": "done", "n_days": n_days,
             "stamp": data.stamp(date_range(q.first, q.last)), "seconds": round(time.time() - t0, 2)}
+
+
+# ---------------------------------------------------------------------------------- one line's regularity
+def _route_order(stops: list[str], edges: set[tuple[str, str]]) -> list[int]:
+    """Indexes of ``stops`` (given by time after the trip's start) along the line's links: a stop comes after the
+    stops with a link to it, the time only breaks ties (branches, short trips starting mid-route)."""
+    import heapq
+    pos = {s: i for i, s in enumerate(stops)}
+    succ, indeg = {s: [] for s in stops}, dict.fromkeys(stops, 0)
+    for a, b in edges:
+        if a in pos and b in pos and a != b:
+            succ[a].append(b); indeg[b] += 1
+    heap = [pos[s] for s in stops if indeg[s] == 0]
+    heapq.heapify(heap)
+    out, seen = [], set()
+    while len(out) < len(stops):
+        if not heap:     # a loop: the earliest stop left starts again
+            heap = [min(pos[s] for s in stops if s not in seen)]
+        i = heapq.heappop(heap)
+        if stops[i] in seen:
+            continue
+        seen.add(stops[i]); out.append(i)
+        for b in succ[stops[i]]:
+            indeg[b] -= 1
+            if indeg[b] == 0 and b not in seen:
+                heapq.heappush(heap, pos[b])
+    return out
+
+
+
+MIN_STOP_DAYS = 0.5       # a stop measured on under this share of its direction's best-covered stop's days: a detour
+
+
+def compute_line_regularity(data: Data, q: MapQuery) -> dict:
+    """One line's regularity (``stibms.regularity``) on the days asked for: per direction and stop in route order
+    (the hours asked for), per hour (all hours) and in total. Same days left out as the network page."""
+    from microsegments.report import title_name
+    t0 = time.time()
+    line = q.lines[0]
+    excluded, reduced = set(q.exclusions(data)), _reduced_days(data, q)
+    months = [m for m in months_between(q.first, q.last) if m in data.derived_months()]
+    for m in months:
+        lh, plan = _month_tables(data, q, m)
+        if lh is not None:
+            excluded |= _left_out(q, _anomalies(lh, plan, reduced))[0]
+
+    def month(m):
+        h = data.read_optional(regularity.rel(m, "headways"))
+        if h is None:
+            return None
+        days = month_dates(m)
+        return h.filter((pl.col("line") == line) & pl.col("service_date").is_between(max(q.first, days[0]), min(q.last, days[-1]))
+                        & _keep_days(q, excluded))
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(months)))) as ex:
+        got = [x for x in ex.map(month, months) if x is not None and x.height]
+    out = {"query": q.canonical(), "line": line, "status": "done", "days": 0, "total": None, "hours": [], "dirs": []}
+    if not got:
+        return {**out, "seconds": round(time.time() - t0, 2)}
+    x = pl.concat(got)
+    sel = x.filter(_in_hours(q))
+    total = sel.select(regularity.sums()).row(0, named=True) if sel.height else None
+    hourly = x.group_by("hour").agg(regularity.sums()).sort("hour")
+    stops = sel.group_by("direction_id", "stop_id").agg(regularity.sums())
+    order = [t for t in (_table(data, m, "regstops") for m in months) if t is not None]
+    order = (pl.concat(order).filter(pl.col("line") == line).group_by("direction_id", "stop_id")
+             .agg(((pl.col("off_s") * pl.col("days")).sum() / pl.col("days").sum()).alias("off_s"), pl.col("days").sum())
+             if order else pl.DataFrame(schema={"direction_id": pl.Int8, "stop_id": pl.Utf8, "off_s": pl.Float64, "days": pl.UInt32}))
+    names, nxt, edges = {}, {}, set()
+    for t in (_table(data, m, "links") for m in months):
+        if t is None:
+            continue
+        for k, a, b in t.filter(pl.col("line") == line).select("link_key", "from_name", "to_name").iter_rows():
+            ends = k.split("~")[0].split(">")
+            if len(ends) == 2:
+                names.setdefault(ends[0], a); names.setdefault(ends[1], b); nxt.setdefault(ends[0], b)
+                edges.add((ends[0], ends[1]))
+    dirs = []
+    for (d,), g in stops.join(order, on=["direction_id", "stop_id"], how="left").group_by("direction_id"):
+        g = g.filter(pl.col("days").fill_null(0) >= MIN_STOP_DAYS * g["days"].max()).sort("off_s", nulls_last=True)
+        g = g[[i for i in _route_order(g["stop_id"].to_list(), edges)]]
+        rows = [{"id": r["stop_id"], "name": title_name(names.get(r["stop_id"], r["stop_id"])), **regularity.waits(r)}
+                for r in g.iter_rows(named=True)]
+        if rows:
+            last = g["stop_id"][-1]
+            dirs.append({"dir": int(d), "from": rows[0]["name"], "to": title_name(nxt.get(last, names.get(last, last))), "stops": rows})
+    return {**out, "days": x["service_date"].n_unique(), "total": regularity.waits(total) if total else None,
+            "hours": [{"hour": int(r["hour"]), **regularity.waits(r)} for r in hourly.iter_rows(named=True)],
+            "dirs": sorted(dirs, key=lambda r: r["dir"]), "stamp": data.stamp(date_range(q.first, q.last)),
+            "seconds": round(time.time() - t0, 2)}

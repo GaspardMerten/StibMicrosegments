@@ -6,6 +6,7 @@ import {XL} from "./excl.js?rev=__REV__";
 import {dowsSel, setQuality, setSummary} from "./quality.js?rev=__REV__";
 import {excludeRoutes, showRoutes} from "./routes.js?rev=__REV__";
 import {ran, watch} from "./stale.js?rev=__REV__";
+import {clearRegularity, loadRegularity, regDir} from "./linereg.js?rev=__REV__";
 
 let FRAME = null;     // the direction asked for is S.dir (also set from the URL by main.js)
 function drawSens(dirs, cur) {
@@ -20,6 +21,7 @@ function setDir(d, send) {
   const u = new URLSearchParams(location.search); u.set("dir", d);
   history.replaceState(null, "", location.pathname + "?" + u);
   selChanged();
+  regDir();
   if (send && FRAME && FRAME.contentWindow) FRAME.contentWindow.postMessage({ms: "dir", dir: d}, "*");
 }
 // the frame's directions ({ms: "dirs"}): keep the chosen one when the line has it
@@ -54,11 +56,14 @@ export async function runLine() {
   const me = ++RUN;
   ran("f", p);
   selChanged(true);
-  $("go").disabled = true; $("notes").innerHTML = ""; setQuality(null); showRoutes(null);
+  $("go").disabled = true; $("notes").innerHTML = ""; setQuality(null); showRoutes(null); clearRegularity();
   busy($("status"), S.tab === "cmp" ? `Comparaison de la ligne ${esc(line)}` : `Calcul de la ligne ${esc(line)}`,
     S.tab === "cmp" ? "une comparaison prend jusqu'à une minute la première fois" : "la première fois, quelques mois prennent 10 à 40 s");
   try {
-    if (await loadQuality(line, me)) await showFrame(p, me);
+    if (await loadQuality(line, me)) {
+      loadRegularity(p, formPeriods());     // beside the frame, never blocks it
+      await showFrame(p, me);
+    }
   } catch (e) {
     if (me === RUN) { done($("status"), esc(e.message), true); $("view").innerHTML = ""; }
   }
