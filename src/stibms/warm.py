@@ -65,10 +65,22 @@ def default_lines(data, only: set[str] | None = None) -> list[tuple[str, dict]]:
     return out
 
 
+def _page_window() -> tuple[str, str]:
+    """The window the network page opens on: its whole default period (the map and the ranking follow it)."""
+    from fastapi import HTTPException
+    from .api.context import state
+    from .network import default_window
+    w = default_window(state.data)
+    if w is None:
+        raise HTTPException(404, "no complete derived month")
+    return w[0].isoformat(), w[1].isoformat()
+
+
 def ranking_result():
     from .api.params import call
     from .api.rank import rank_query, rank_result
-    return rank_result(*call(rank_query))
+    a, b = _page_window()
+    return rank_result(*call(rank_query, from_=a, to=b))
 
 
 def network_result():
@@ -78,16 +90,11 @@ def network_result():
 
 
 def network_map_result():
-    """The map of the last complete month, what the page shows first."""
-    from fastapi import HTTPException
-    from .api.context import state
+    """The map of the page's default period, what the page shows first."""
     from .api.network import map_query, map_result
     from .api.params import call
-    from .ranking import default_window
-    w = default_window(state.data)
-    if w is None:
-        raise HTTPException(404, "no complete derived month")
-    return map_result(call(map_query, from_=w[0].isoformat(), to=w[1].isoformat()))
+    a, b = _page_window()
+    return map_result(call(map_query, from_=a, to=b))
 
 
 def run(lines: set[str] | None = None, workers: int = 2, analysis: bool = True) -> dict[str, int]:

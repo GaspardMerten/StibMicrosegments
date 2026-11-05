@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------- network indicators: tiles, evolution, table
-import {$, esc, fday, fmonth, nf} from "./util.js?rev=__REV__";
+import {$, esc, fday, fmonth, fspan, nf} from "./util.js?rev=__REV__";
 import {XR} from "./excl.js?rev=__REV__";
 import {lineChart, monthAxis} from "./charts.js?rev=__REV__";
 
@@ -41,7 +41,9 @@ const delta = (a, b, unit, d = 1) => {
 function tilesHtml(R) {
   const key = R.selection, {g, days, prev} = focusValues(R, key);
   if (!g) return "";
-  const when = st.focus && st.focus !== "all" ? fmonth(st.focus) : "la période";
+  const month = st.focus && st.focus !== "all";
+  const when = month ? fmonth(st.focus) : fspan(R.query.first, R.query.last);
+  const back = month ? `<button type="button" class="mini" id="rfall">Revenir à toute la période</button>` : "";
   const pg = prev && prev.groups[key], pm = prev ? fmonth(prev.month).split(" ")[0] : "";
   const vs = html => html ? `${html} <small>par rapport à ${esc(pm)}</small>` : "";
   const noSp = key === "metro";
@@ -49,7 +51,8 @@ function tilesHtml(R) {
   const perDay = v => days ? `${nf(Math.round(v / days / 100) * 100)} km par jour` : "";
   const nosp = `<span>La STIB ne situe les rames qu'aux stations : pas de vitesse mesurée. Objectif de la STIB : ${nf(OFFICIAL.speed.metro[0], 1)} km/h.</span>`;
   const scope = `<div class="seg sm" id="rkmscope" role="group" aria-label="Kilomètres comptés"><button type="button" data-s="all" aria-pressed="${st.scope === "all"}">Km : mois entiers</button><button type="button" data-s="sel" aria-pressed="${st.scope === "sel"}">Km : jours et heures choisis</button></div>`;
-  return `<div class="fhr"><h2 class="fh">${esc(NAME[key])} · ${esc(when)}</h2>${scope}</div><div class="kpis">
+  return `<div class="fhr"><h2 class="fh">${esc(NAME[key])} · ${esc(when)}</h2>${back}${scope}</div>
+    <p class="fsub">${month ? "Le mois choisi sur un graphique ou dans le tableau ; la carte et le classement le suivent." : `${nf(days)} jours comptés. Cliquez un mois sur un graphique ou dans le tableau pour le détailler.`}</p><div class="kpis">
     <div class="kpi"><label>Vitesse entre arrêts</label>${noSp ? `<b>n/d</b>${nosp}` : `<b>${nf(g.vr, 1)}<u> km/h</u></b><span>${vs(delta(g.vr, pg && pg.vr, "km/h")) || "hors zones d'arrêt"}</span>`}</div>
     <div class="kpi"><label>Vitesse avec arrêts</label>${noSp ? `<b>n/d</b>` : `<b>${nf(g.v, 1)}<u> km/h</u></b><span>${vs(delta(g.v, pg && pg.v, "km/h")) || "temps aux arrêts compris"}</span>`}</div>
     <div class="kpi"><label>Km planifiés</label><b>${millions(km.plan)}</b><span>${perDay(km.plan)}</span></div>
@@ -219,6 +222,7 @@ function draw() {
   $("rstrike")?.addEventListener("click", () => { XR.set("reduced", !XR.on("reduced")); $("rgo").click(); });
   $("rkmscope").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { st.scope = b.dataset.s; draw(); } });
   $("rcsv").addEventListener("click", () => csv(R));
+  $("rfall")?.addEventListener("click", () => st.onFocus && st.onFocus("all"));
   $("rnet").querySelectorAll("tbody tr[data-m]").forEach(tr => tr.addEventListener("click", () => st.onFocus && st.onFocus(tr.dataset.m)));
 }
 export function drawNet(R, focus, onFocus, R2 = null) { st.R = R; st.R2 = R2; st.focus = focus; st.onFocus = onFocus; draw(); }

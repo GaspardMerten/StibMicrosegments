@@ -141,9 +141,11 @@ function apiParams(ref) {
   if (ref) { p.set("from", a); p.set("to", b); }
   return p;
 }
-// the displayed window of a focus: a month within the period, or the period
+// the displayed window of a focus: a month within the period, or the period (its last 365 days when it is
+// longer than a map can cover)
+const spanOf = q => (new Date(q.last) - new Date(q.first)) / 864e5;
 function focusWindow(f, q) {
-  if (f === "all" || !f) return [q.first, q.last];
+  if (f === "all" || !f) return spanOf(q) <= 400 ? [q.first, q.last] : [addDays(q.last, -364), q.last];
   const a = f + "-01", b = monthEnd(f);
   return [a < q.first ? q.first : a, b > q.last ? q.last : b];
 }
@@ -191,14 +193,13 @@ export async function runRank() {
     if (me === NK) { $("rgo").disabled = false; $("rall").classList.remove("loading"); }
   }
 }
+// what the page shows: the period asked for, unless a month was picked (a click on a chart or the table)
 function pickFocus(R) {
-  const ms = R.months, spanDays = (new Date(R.query.last) - new Date(R.query.first)) / 864e5;
-  const complete = [...ms].reverse().find(m => m.complete) || ms[ms.length - 1];
-  const asked = v.focusAsked;
-  v.focus = asked === "all" && spanDays <= 400 ? "all" : ms.some(m => m.month === asked) ? asked : complete.month;
+  const ms = R.months, long = spanOf(R.query) > 400;
+  v.focus = ms.some(m => m.month === v.focusAsked) ? v.focusAsked : "all";
   v.focusAsked = v.focus;
-  $("rfocus").innerHTML = [...ms].reverse().map(m => `<option value="${m.month}">${esc(fmonth(m.month))}</option>`).join("")
-    + (spanDays <= 400 ? `<option value="all">Toute la période</option>` : "");
+  $("rfocus").innerHTML = `<option value="all">${long ? "Toute la période (365 derniers jours sur la carte)" : "Toute la période"}</option>`
+    + [...ms].reverse().map(m => `<option value="${m.month}">${esc(fmonth(m.month))}</option>`).join("");
   $("rfocus").value = v.focus;
   $("rmaphead").hidden = false;
   $("rfocus").closest("label").hidden = !!v.R2;   // the comparison maps the two whole periods
