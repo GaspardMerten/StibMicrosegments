@@ -926,3 +926,10 @@ def test_route_order_follows_links():
     edges = {("Fonson", "Paix"), ("Paix", "Tilleul"), ("Tilleul", "Helmet")}
     assert [stops[i] for i in _route_order(stops, edges)] == ["Fonson", "Paix", "Tilleul", "Helmet"]
     assert [stops[i] for i in _route_order(stops, edges | {("Helmet", "Fonson")})][:1] == ["Fonson"]   # a loop still ends
+
+
+def test_stop_before_an_unobserved_terminus_is_kept():
+    from stibms import regularity as R
+    pu = _pu([(f"t{i}", s, k, f"06:{10 * i + k:02d}", 0) for i in range(3) for k, s in enumerate(("A", "B", "Z"))])
+    pu = pu.with_columns((pl.col("stop_id") != "Z").alias("observed"))    # the terminus Z is never observed
+    assert set(R.stop_times(pu)["stop_id"]) == {"A", "B"}

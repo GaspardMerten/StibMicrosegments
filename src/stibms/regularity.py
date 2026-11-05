@@ -75,15 +75,16 @@ def stop_times(pu: pl.DataFrame) -> pl.DataFrame:
     keep = pl.col("trip_schedule_relationship").fill_null(0) == 0 if "trip_schedule_relationship" in pu.columns else pl.lit(True)
     if "observed" in pu.columns:
         keep = keep & pl.col("observed").fill_null(False)
-    return (pu.filter(keep)
+    # a trip's last stop: nobody boards there, and arrivals at a terminus wait for their departure. Found among all
+    # its stop times: when the terminus is not observed, the stop before it is not the last
+    last = pl.col("stop_sequence") == pl.col("stop_sequence").max().over("route_id", "trip_id", "start_date")
+    return (pu.filter(keep.fill_null(False) | last).filter(~last)
             .select(pl.col("route_id").cast(pl.Utf8).alias("line"), pl.col("direction_id").cast(pl.Int8),
                     pl.col("stop_id").cast(pl.Utf8), pl.col("start_date").cast(pl.Utf8).str.strptime(pl.Date, "%Y%m%d").alias("service_date"),
                     pl.col("trip_id").cast(pl.Utf8), pl.col("stop_sequence"), t.alias("t"), (t - delay).alias("s"))
             .drop_nulls(["line", "stop_id", "service_date", "t", "s"])
             .unique(["line", "trip_id", "stop_sequence", "service_date"])
-            .drop("stop_sequence")
-            # a trip's last stop: nobody boards there, and arrivals at a terminus wait for their departure
-            .filter(pl.col("s") < pl.col("s").max().over("line", "trip_id", "service_date")))
+            .drop("stop_sequence"))
 
 
 def covered(st: pl.DataFrame) -> pl.DataFrame:
