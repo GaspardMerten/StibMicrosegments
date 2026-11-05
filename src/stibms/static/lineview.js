@@ -6,7 +6,7 @@ import {XL} from "./excl.js?rev=__REV__";
 import {dowsSel, setQuality, setSummary} from "./quality.js?rev=__REV__";
 import {excludeRoutes, showRoutes} from "./routes.js?rev=__REV__";
 import {ran, watch} from "./stale.js?rev=__REV__";
-import {clearRegularity, loadRegularity, regDir} from "./linereg.js?rev=__REV__";
+import {clearRegularity, loadRegularity, regDir, regEnds} from "./linereg.js?rev=__REV__";
 
 let FRAME = null;     // the direction asked for is S.dir (also set from the URL by main.js)
 function drawSens(dirs, cur) {
@@ -27,6 +27,7 @@ function setDir(d, send) {
 // the frame's directions ({ms: "dirs"}): keep the chosen one when the line has it
 function onDirs(m) {
   const ds = m.dirs || [], want = ds.some(d => d.dir === S.dir) ? S.dir : m.dir;
+  regEnds(ds);
   drawSens(ds, want);
   if (want != null) setDir(want, want !== m.dir);
 }

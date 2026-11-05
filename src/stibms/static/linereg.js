@@ -6,7 +6,7 @@ import {lineChart} from "./charts.js?rev=__REV__";
 
 const HOURS = [["Journée", 6, 21], ["Pointe du matin", 7, 10], ["Pointe du soir", 16, 19], ["Soirée", 20, 24]];
 const C = {plan: "#7f8aa3", real: "#F3C300", a: "#8fb3e8", b: "#F3C300"};
-const st = {base: null, periods: [], hours: [6, 21], R: [], me: 0};
+const st = {base: null, periods: [], hours: [6, 21], R: [], me: 0, ends: {}};
 
 const mins = x => x == null ? "–" : `${nf(x, 1)}<u> min</u>`;
 const sec = x => x == null ? "–" : `${x > 0.005 ? "+" : x < -0.005 ? "−" : ""}${nf(Math.round(Math.abs(x) * 60))} s`;
@@ -22,6 +22,8 @@ export function loadRegularity(p, periods) {
 }
 export function clearRegularity() { st.me++; st.R = []; st.args = null; $("regview").innerHTML = ""; }
 export function regDir() { if (st.R.length) draw(); }
+// the frame's directions: their real termini (the last stop measured here comes before the terminus)
+export function regEnds(dirs) { st.ends = Object.fromEntries((dirs || []).map(d => [d.dir, d.to])); }
 
 async function fetchAll() {
   const me = ++st.me;
@@ -69,7 +71,7 @@ function draw() {
   const two = st.R.length === 2, R = st.R[st.R.length - 1], A = two ? st.R[0] : null;
   const d = dirOf(R), dA = A ? (A.dirs || []).find(x => d && x.dir === d.dir) : null;
   const hs = `<div class="seg sm" id="reghours" role="group" aria-label="Heures">${HOURS.map(([t, a, b]) => `<button type="button" data-h0="${a}" data-h1="${b}" aria-pressed="${a === st.hours[0] && b === st.hours[1]}">${t}</button>`).join("")}</div>`;
-  const head = `<div class="fhr"><h2 class="fh">Régularité${d ? ` · vers ${esc(d.to)}` : ""}</h2>${hs}</div>`;
+  const head = `<div class="fhr"><h2 class="fh">Régularité${d ? ` · vers ${esc(st.ends[d.dir] || d.to)}` : ""}</h2>${hs}</div>`;
   if (!R.total || !d) {
     $("regview").innerHTML = `<section class="regl">${head}<div class="notice">Pas de mesure de régularité pour cette ligne sur ces jours et ces heures.</div></section>`;
     bind(); return;
